@@ -55,10 +55,14 @@ pub trait TraceEvent {
         &self,
         enc: &mut types::EventEncoder<'_, W>,
     ) -> std::io::Result<()>;
-    /// Decode from a slice of zero-copy field values.
+    /// Decode from named field values.
     /// `timestamp_ns` is the absolute timestamp from the event header (if present).
-    fn decode<'a>(timestamp_ns: Option<u64>, fields: &[FieldValueRef<'a>])
-    -> Option<Self::Ref<'a>>;
+    /// `fields` and `field_names` are parallel slices from the schema.
+    fn decode<'a>(
+        timestamp_ns: Option<u64>,
+        fields: &[FieldValueRef<'a>],
+        field_names: &[String],
+    ) -> Option<Self::Ref<'a>>;
 
     /// Build a SchemaEntry for this event type.
     fn schema_entry() -> SchemaEntry {

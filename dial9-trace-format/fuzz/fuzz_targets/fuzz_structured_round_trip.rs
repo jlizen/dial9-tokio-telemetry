@@ -156,6 +156,7 @@ fuzz_target!(|data: &[u8]| {
             .map(|(j, ft)| FieldDef {
                 name: format!("f{j}"),
                 field_type: ft.to_field_type(),
+                    optional: false,
             })
             .collect();
         schemas.push(enc.register_schema(names[i], fields).unwrap());

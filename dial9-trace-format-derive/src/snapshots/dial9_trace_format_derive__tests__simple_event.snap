@@ -15,7 +15,8 @@ impl ::dial9_trace_format::TraceEvent for SimpleEvent {
     fn field_defs() -> Vec<::dial9_trace_format::schema::FieldDef> {
         vec![
             ::dial9_trace_format::schema::FieldDef { name : "value".to_string(),
-            field_type : < u32 as ::dial9_trace_format::TraceField > ::field_type(), }
+            field_type : < u32 as ::dial9_trace_format::TraceField > ::field_type(),
+            optional : < u32 as ::dial9_trace_format::TraceField > ::is_optional(), }
         ]
     }
     fn timestamp(&self) -> u64 {
@@ -31,12 +32,21 @@ impl ::dial9_trace_format::TraceEvent for SimpleEvent {
     fn decode<'a>(
         timestamp_ns: Option<u64>,
         fields: &[::dial9_trace_format::types::FieldValueRef<'a>],
+        field_names: &[String],
     ) -> Option<Self::Ref<'a>> {
         Some(SimpleEventRef {
             timestamp_ns: timestamp_ns?,
-            value: <u32 as ::dial9_trace_format::TraceField>::decode_ref(
-                fields.get(0usize)?,
-            )?,
+            value: {
+                let val = field_names
+                    .iter()
+                    .zip(fields.iter())
+                    .find(|(n, _)| n.as_str() == "value")
+                    .map(|(_, v)| v);
+                match val {
+                    Some(v) => <u32 as ::dial9_trace_format::TraceField>::decode_ref(v)?,
+                    None => <u32 as ::dial9_trace_format::TraceField>::decode_missing()?,
+                }
+            },
         })
     }
 }

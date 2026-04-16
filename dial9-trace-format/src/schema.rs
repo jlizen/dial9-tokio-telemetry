@@ -14,6 +14,10 @@ pub struct FieldDef {
     pub name: String,
     /// Wire type used to encode this field.
     pub field_type: FieldType,
+    /// Whether this field is optional (high-bit modifier on the wire tag).
+    /// Optional fields are preceded by a 1-byte presence prefix in the event
+    /// data: `0x00` = absent, `0x01` = present.
+    pub optional: bool,
 }
 
 /// Describes the layout of an event type. Does not carry a wire type ID —
@@ -103,10 +107,12 @@ mod tests {
                 FieldDef {
                     name: "timestamp_ns".into(),
                     field_type: FieldType::Varint,
+                    optional: false,
                 },
                 FieldDef {
                     name: "worker".into(),
                     field_type: FieldType::Varint,
+                    optional: false,
                 },
             ],
         };

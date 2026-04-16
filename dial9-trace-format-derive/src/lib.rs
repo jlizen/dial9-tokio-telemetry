@@ -47,7 +47,6 @@ fn derive_trace_event_impl(input: DeriveInput) -> proc_macro2::TokenStream {
     let mut encode_tokens = Vec::new();
     let mut ref_fields = Vec::new();
     let mut decode_tokens = Vec::new();
-    let mut decode_idx = 0usize;
 
     for field in fields.iter() {
         let field_name = field.ident.as_ref().unwrap();
@@ -63,6 +62,7 @@ fn derive_trace_event_impl(input: DeriveInput) -> proc_macro2::TokenStream {
             ::dial9_trace_format::schema::FieldDef {
                 name: #field_name_str.to_string(),
                 field_type: <#ty as ::dial9_trace_format::TraceField>::field_type(),
+                optional: <#ty as ::dial9_trace_format::TraceField>::is_optional(),
             }
         });
         encode_tokens.push(quote! {
@@ -78,11 +78,17 @@ fn derive_trace_event_impl(input: DeriveInput) -> proc_macro2::TokenStream {
             #(#doc_attrs)*
             pub #field_name: <#ty as ::dial9_trace_format::TraceField>::Ref<'a>
         });
-        let idx = decode_idx;
         decode_tokens.push(quote! {
-            #field_name: <#ty as ::dial9_trace_format::TraceField>::decode_ref(fields.get(#idx)?)?
+            #field_name: {
+                let val = field_names.iter().zip(fields.iter())
+                    .find(|(n, _)| n.as_str() == #field_name_str)
+                    .map(|(_, v)| v);
+                match val {
+                    Some(v) => <#ty as ::dial9_trace_format::TraceField>::decode_ref(v)?,
+                    None => <#ty as ::dial9_trace_format::TraceField>::decode_missing()?,
+                }
+            }
         });
-        decode_idx += 1;
     }
 
     let timestamp_impl = if let Some(ref ts_field) = timestamp_field_name {
@@ -143,7 +149,7 @@ fn derive_trace_event_impl(input: DeriveInput) -> proc_macro2::TokenStream {
                 #(#encode_tokens)*
                 Ok(())
             }
-            fn decode<'a>(timestamp_ns: Option<u64>, fields: &[::dial9_trace_format::types::FieldValueRef<'a>]) -> Option<Self::Ref<'a>> {
+            fn decode<'a>(timestamp_ns: Option<u64>, fields: &[::dial9_trace_format::types::FieldValueRef<'a>], field_names: &[String]) -> Option<Self::Ref<'a>> {
                 Some(#ref_name {
                     #decode_timestamp_init
                     #(#decode_tokens,)*

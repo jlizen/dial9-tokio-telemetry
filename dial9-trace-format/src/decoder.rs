@@ -125,8 +125,8 @@ pub enum DecodedFrameRef<'a> {
 
 struct SchemaCache {
     name: String,
+    field_tags: Vec<u8>,
     field_names: Vec<String>,
-    field_types: Vec<FieldType>,
     has_timestamp: bool,
 }
 
@@ -214,7 +214,7 @@ impl<'a> Decoder<'a> {
             .get(type_id.0 as usize)
             .and_then(|s| s.as_ref())
             .map(|c| SchemaInfo {
-                field_types: &c.field_types,
+                field_tags: &c.field_tags,
                 has_timestamp: c.has_timestamp,
             })
     }
@@ -226,8 +226,8 @@ impl<'a> Decoder<'a> {
         }
         self.schema_cache[idx] = Some(SchemaCache {
             name: entry.name.clone(),
+            field_tags: entry.fields.iter().map(|f| f.field_type as u8).collect(),
             field_names: entry.fields.iter().map(|f| f.name.clone()).collect(),
-            field_types: entry.fields.iter().map(|f| f.field_type).collect(),
             has_timestamp: entry.has_timestamp,
         });
         self.registry.register(type_id, entry)
@@ -394,6 +394,13 @@ impl<'a> Decoder<'a> {
         mut f: impl for<'f> FnMut(RawEvent<'a, 'f>) -> Result<(), E>,
     ) -> Result<(), TryForEachError<E>> {
         let mut values_buf: Vec<FieldValueRef<'a>> = Vec::new();
+        // Cloned schema metadata, reused across iterations to avoid
+        // re-cloning when the same event type repeats (common case).
+        let mut cached_type_id = WireTypeId(u16::MAX);
+        let mut cached_name = String::new();
+        let mut cached_tags = Vec::<u8>::new();
+        let mut cached_names = Vec::<String>::new();
+        let mut cached_has_ts = false;
         while self.pos < self.data.len() {
             let remaining = &self.data[self.pos..];
             let tag = match remaining.first() {
@@ -415,21 +422,30 @@ impl<'a> Decoder<'a> {
                             }));
                         }
                     };
-                    let cache = match self
-                        .schema_cache
-                        .get(type_id.0 as usize)
-                        .and_then(|s| s.as_ref())
-                    {
-                        Some(c) => c,
-                        None => {
-                            return Err(TryForEachError::Decode(DecodeError {
-                                pos: self.pos,
-                                message: format!("unknown type_id {type_id:?}"),
-                            }));
-                        }
-                    };
+                    // Clone schema metadata into locals so we release the
+                    // borrow on self.schema_cache before mutating self.pos.
+                    if type_id != cached_type_id {
+                        let cache = match self
+                            .schema_cache
+                            .get(type_id.0 as usize)
+                            .and_then(|s| s.as_ref())
+                        {
+                            Some(c) => c,
+                            None => {
+                                return Err(TryForEachError::Decode(DecodeError {
+                                    pos: self.pos,
+                                    message: format!("unknown type_id {type_id:?}"),
+                                }));
+                            }
+                        };
+                        cached_type_id = type_id;
+                        cached_name.clone_from(&cache.name);
+                        cached_tags.clone_from(&cache.field_tags);
+                        cached_names.clone_from(&cache.field_names);
+                        cached_has_ts = cache.has_timestamp;
+                    }
 
-                    let timestamp_ns = if cache.has_timestamp {
+                    let timestamp_ns = if cached_has_ts {
                         match codec::decode_u24_le(&remaining[pos..]) {
                             Some(delta) => {
                                 pos += 3;
@@ -447,17 +463,56 @@ impl<'a> Decoder<'a> {
                     };
 
                     values_buf.clear();
-                    for ft in &cache.field_types {
-                        match FieldValueRef::decode(*ft, remaining, pos) {
-                            Some((val, consumed)) => {
-                                values_buf.push(val);
-                                pos += consumed;
-                            }
+                    for &ftag in &cached_tags {
+                        let inner_type = match FieldType::from_tag(ftag) {
+                            Some(ft) => ft,
                             None => {
                                 return Err(TryForEachError::Decode(DecodeError {
                                     pos: self.pos + pos,
-                                    message: "truncated field value".into(),
+                                    message: format!("unknown field type tag {ftag:#x}"),
                                 }));
+                            }
+                        };
+                        if FieldType::is_optional(ftag) {
+                            match remaining.get(pos) {
+                                Some(0x00) => {
+                                    values_buf.push(FieldValueRef::None);
+                                    pos += 1;
+                                }
+                                Some(_) => {
+                                    pos += 1;
+                                    match FieldValueRef::decode(inner_type, remaining, pos) {
+                                        Some((val, consumed)) => {
+                                            values_buf.push(val);
+                                            pos += consumed;
+                                        }
+                                        None => {
+                                            return Err(TryForEachError::Decode(DecodeError {
+                                                pos: self.pos + pos,
+                                                message: "truncated optional field value".into(),
+                                            }));
+                                        }
+                                    }
+                                }
+                                None => {
+                                    return Err(TryForEachError::Decode(DecodeError {
+                                        pos: self.pos + pos,
+                                        message: "truncated optional field prefix".into(),
+                                    }));
+                                }
+                            }
+                        } else {
+                            match FieldValueRef::decode(inner_type, remaining, pos) {
+                                Some((val, consumed)) => {
+                                    values_buf.push(val);
+                                    pos += consumed;
+                                }
+                                None => {
+                                    return Err(TryForEachError::Decode(DecodeError {
+                                        pos: self.pos + pos,
+                                        message: "truncated field value".into(),
+                                    }));
+                                }
                             }
                         }
                     }
@@ -467,10 +522,10 @@ impl<'a> Decoder<'a> {
                     }
                     f(RawEvent {
                         type_id,
-                        name: &cache.name,
+                        name: &cached_name,
                         timestamp_ns,
                         fields: &values_buf,
-                        field_names: &cache.field_names,
+                        field_names: &cached_names,
                         string_pool: &self.string_pool,
                     })
                     .map_err(TryForEachError::User)?;
@@ -491,6 +546,7 @@ impl<'a> Decoder<'a> {
                 _ => {
                     // Mid-stream header = reset frame (tag 0x54 = 'T' from TRC\0)
                     if tag == codec::MAGIC[0] && self.try_consume_reset_header() {
+                        cached_type_id = WireTypeId(u16::MAX);
                         continue;
                     }
                     match self.next_frame_ref() {
@@ -569,6 +625,7 @@ mod tests {
             vec![FieldDef {
                 name: "v".into(),
                 field_type: FieldType::Varint,
+                optional: false,
             }],
         )
         .unwrap();
@@ -587,6 +644,7 @@ mod tests {
                 vec![FieldDef {
                     name: "v".into(),
                     field_type: FieldType::Varint,
+                    optional: false,
                 }],
             )
             .unwrap();
@@ -627,6 +685,7 @@ mod tests {
                 vec![FieldDef {
                     name: "v".into(),
                     field_type: FieldType::Varint,
+                    optional: false,
                 }],
             )
             .unwrap();
@@ -658,6 +717,7 @@ mod tests {
                 vec![FieldDef {
                     name: "v".into(),
                     field_type: FieldType::Varint,
+                    optional: false,
                 }],
             )
             .unwrap();
@@ -687,6 +747,7 @@ mod tests {
                 vec![FieldDef {
                     name: "v".into(),
                     field_type: FieldType::Varint,
+                    optional: false,
                 }],
             )
             .unwrap();
@@ -717,6 +778,7 @@ mod tests {
                 vec![FieldDef {
                     name: "v".into(),
                     field_type: FieldType::Varint,
+                    optional: false,
                 }],
             )
             .unwrap();
@@ -750,6 +812,7 @@ mod tests {
                 vec![FieldDef {
                     name: "v".into(),
                     field_type: FieldType::Varint,
+                    optional: false,
                 }],
             )
             .unwrap();

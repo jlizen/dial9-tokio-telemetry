@@ -148,6 +148,7 @@ mod tests {
                 vec![FieldDef {
                     name: "count".into(),
                     field_type: FieldType::Varint,
+                    optional: false,
                 }],
             )
             .unwrap();
@@ -175,6 +176,7 @@ mod tests {
                 vec![FieldDef {
                     name: "frames".into(),
                     field_type: FieldType::StackFrames,
+                    optional: false,
                 }],
             )
             .unwrap();

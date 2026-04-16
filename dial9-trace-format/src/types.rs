@@ -9,6 +9,11 @@ use crate::codec::{MAX_TIMESTAMP_DELTA_NS, TAG_TIMESTAMP_RESET};
 use std::io::{self, Write};
 
 /// Wire type tags for field types.
+///
+/// The high bit (0x80) is reserved as an "optional" modifier. When set, the
+/// field is preceded by a 1-byte presence prefix on the wire: `0x00` means
+/// absent (decoded as [`FieldValueRef::None`]), `0x01` means present (followed
+/// by the inner type's normal encoding). The inner type tag is `tag & 0x7F`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum FieldType {
@@ -78,6 +83,8 @@ pub enum FieldValue {
     StackFrames(Vec<u64>),
     Varint(u64),
     StringMap(Vec<(Vec<u8>, Vec<u8>)>),
+    /// Absent optional field.
+    None,
 }
 
 #[cfg(feature = "serde")]
@@ -114,8 +121,12 @@ impl FieldValue {
 }
 
 impl FieldType {
+    /// The high bit used to mark a field type as optional on the wire.
+    pub const OPTIONAL_BIT: u8 = 0x80;
+
     pub fn from_tag(tag: u8) -> Option<FieldType> {
-        match tag {
+        // Strip the optional bit to get the inner type.
+        match tag & 0x7F {
             1 => Some(FieldType::I64),
             2 => Some(FieldType::F64),
             3 => Some(FieldType::Bool),
@@ -130,6 +141,16 @@ impl FieldType {
             13 => Some(FieldType::U32),
             _ => None,
         }
+    }
+
+    /// Returns true if the wire tag has the optional modifier set.
+    pub fn is_optional(tag: u8) -> bool {
+        tag & Self::OPTIONAL_BIT != 0
+    }
+
+    /// Returns the wire tag with the optional modifier set.
+    pub fn optional_tag(self) -> u8 {
+        self as u8 | Self::OPTIONAL_BIT
     }
 }
 
@@ -167,6 +188,10 @@ impl FieldValue {
                     w.write_all(v)?;
                 }
                 Ok(())
+            }
+            FieldValue::None => {
+                // Optional field absent: write the 0x00 prefix byte.
+                w.write_all(&[0x00])
             }
         }
     }
@@ -265,6 +290,8 @@ pub enum FieldValueRef<'a> {
     StackFrames(StackFramesRef<'a>),
     Varint(u64),
     StringMap(StringMapRef<'a>),
+    /// Absent optional field.
+    None,
 }
 
 /// Zero-copy wrapper for delta-encoded stack frame data.
@@ -691,10 +718,20 @@ pub trait TraceField {
     type Ref<'a>;
 
     fn field_type() -> FieldType;
+    /// Whether this field is optional on the wire (high-bit modifier).
+    fn is_optional() -> bool {
+        false
+    }
     /// Encode this field's value into the event encoder.
     fn encode<W: Write>(&self, enc: &mut EventEncoder<'_, W>) -> io::Result<()>;
     /// Extract this field's value from a zero-copy FieldValueRef.
     fn decode_ref<'a>(val: &FieldValueRef<'a>) -> Option<Self::Ref<'a>>;
+    /// Called when the field is absent from the wire data (not in the schema).
+    /// Returns `None` for required fields (decode failure) and `Some(None)` for
+    /// optional fields.
+    fn decode_missing<'a>() -> Option<Self::Ref<'a>> {
+        None
+    }
 }
 
 impl TraceField for u8 {
@@ -888,6 +925,64 @@ impl TraceField for Vec<(String, String)> {
         }
     }
 }
+
+// --- Optional field support ---
+
+/// Blanket `TraceField` impl for `Option<T>` where `T: TraceField`.
+///
+/// On the wire, the field type tag has the high bit set (0x80 | inner_tag).
+/// Encoding writes `0x00` for `None` or `0x01` followed by the inner value
+/// for `Some`. Decoding maps `FieldValueRef::None` to `None` and delegates
+/// to the inner type for present values.
+macro_rules! impl_optional_trace_field {
+    ($inner:ty) => {
+        impl TraceField for Option<$inner> {
+            type Ref<'a> = Option<<$inner as TraceField>::Ref<'a>>;
+
+            fn field_type() -> FieldType {
+                <$inner as TraceField>::field_type()
+            }
+
+            fn is_optional() -> bool {
+                true
+            }
+
+            fn encode<W: Write>(&self, enc: &mut EventEncoder<'_, W>) -> io::Result<()> {
+                match self {
+                    None => enc.state.writer.write_all(&[0x00]),
+                    Some(v) => {
+                        enc.state.writer.write_all(&[0x01])?;
+                        <$inner as TraceField>::encode(v, enc)
+                    }
+                }
+            }
+
+            fn decode_ref<'a>(val: &FieldValueRef<'a>) -> Option<Self::Ref<'a>> {
+                match val {
+                    FieldValueRef::None => Some(None),
+                    other => Some(Some(<$inner as TraceField>::decode_ref(other)?)),
+                }
+            }
+
+            fn decode_missing<'a>() -> Option<Self::Ref<'a>> {
+                Some(None)
+            }
+        }
+    };
+}
+
+impl_optional_trace_field!(InternedString);
+impl_optional_trace_field!(u8);
+impl_optional_trace_field!(u16);
+impl_optional_trace_field!(u32);
+impl_optional_trace_field!(u64);
+impl_optional_trace_field!(i64);
+impl_optional_trace_field!(f64);
+impl_optional_trace_field!(bool);
+impl_optional_trace_field!(String);
+impl_optional_trace_field!(Vec<u8>);
+impl_optional_trace_field!(StackFrames);
+impl_optional_trace_field!(Vec<(String, String)>);
 
 #[cfg(test)]
 mod tests {

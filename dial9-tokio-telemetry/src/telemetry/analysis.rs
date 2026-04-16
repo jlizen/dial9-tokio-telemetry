@@ -48,7 +48,8 @@ impl TraceReader {
         // After a mid-stream header the pool resets, so deferred resolution
         // would use the wrong pool for earlier batches.
         dec.for_each_event(|ev| {
-            if let Some(r) = format::decode_ref(ev.name, ev.timestamp_ns, ev.fields) {
+            if let Some(r) = format::decode_ref(ev.name, ev.timestamp_ns, ev.fields, ev.field_names)
+            {
                 match &r {
                     TelemetryEventRef::PollStart(e) => {
                         populate_spawn_loc(&mut spawn_locations, e.spawn_loc, ev.string_pool);

@@ -399,6 +399,7 @@ fn kernel_field_to_trace_format(field: &TracepointField) -> FieldDef {
     FieldDef {
         name: field.name.clone(),
         field_type,
+        optional: false,
     }
 }
 

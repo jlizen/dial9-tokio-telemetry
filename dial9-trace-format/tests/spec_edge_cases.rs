@@ -32,6 +32,7 @@ fn schema_max_type_id_via_encoder() {
     let fields = vec![FieldDef {
         name: "v".into(),
         field_type: FieldType::Varint,
+        optional: false,
     }];
     let schema = enc.register_schema("Ev", fields).unwrap();
     enc.write_event(
@@ -68,6 +69,7 @@ fn schema_many_fields_via_encoder() {
         .map(|i| FieldDef {
             name: format!("f{i}"),
             field_type: FieldType::Varint,
+            optional: false,
         })
         .collect();
     let schema = enc.register_schema("Wide", fields).unwrap();
@@ -261,6 +263,7 @@ fn multiple_schemas_then_events() {
     let fields = vec![FieldDef {
         name: "v".into(),
         field_type: FieldType::Varint,
+        optional: false,
     }];
     let schemas: Vec<_> = (0..5)
         .map(|i| {
@@ -299,6 +302,7 @@ fn interleaved_pool_and_events() {
             vec![FieldDef {
                 name: "s".into(),
                 field_type: FieldType::PooledString,
+                optional: false,
             }],
         )
         .unwrap();

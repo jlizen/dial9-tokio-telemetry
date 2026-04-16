@@ -472,6 +472,7 @@ mod tests {
                 vec![FieldDef {
                     name: "v".into(),
                     field_type: FieldType::Varint,
+                    optional: false,
                 }],
             )
             .unwrap();
@@ -490,6 +491,7 @@ mod tests {
         let fields = vec![FieldDef {
             name: "v".into(),
             field_type: FieldType::Varint,
+            optional: false,
         }];
         let _s1 = enc.register_schema("Ev", fields.clone()).unwrap();
         let _s2 = enc.register_schema("Ev", fields).unwrap();
@@ -504,6 +506,7 @@ mod tests {
             vec![FieldDef {
                 name: "v".into(),
                 field_type: FieldType::Varint,
+                optional: false,
             }],
         )
         .unwrap();
@@ -512,6 +515,7 @@ mod tests {
             vec![FieldDef {
                 name: "different".into(),
                 field_type: FieldType::Bool,
+                optional: false,
             }],
         );
         assert!(result.is_err());
@@ -527,6 +531,7 @@ mod tests {
             vec![FieldDef {
                 name: "v".into(),
                 field_type: FieldType::Varint,
+                optional: false,
             }],
         );
 
@@ -560,6 +565,7 @@ mod tests {
                 vec![FieldDef {
                     name: "v".into(),
                     field_type: FieldType::Varint,
+                    optional: false,
                 }],
             )
             .unwrap();
@@ -607,6 +613,7 @@ mod tests {
                 vec![FieldDef {
                     name: "v".into(),
                     field_type: FieldType::Varint,
+                    optional: false,
                 }],
             )
             .unwrap();
@@ -671,6 +678,7 @@ mod tests {
                 vec![FieldDef {
                     name: "v".into(),
                     field_type: FieldType::Varint,
+                    optional: false,
                 }],
             )
             .unwrap();
@@ -756,10 +764,12 @@ mod tests {
                     FieldDef {
                         name: "count".into(),
                         field_type: FieldType::Varint,
+                        optional: false,
                     },
                     FieldDef {
                         name: "name".into(),
                         field_type: FieldType::String,
+                        optional: false,
                     },
                 ],
             )
@@ -803,6 +813,7 @@ mod tests {
             vec![FieldDef {
                 name: "v".into(),
                 field_type: FieldType::Varint,
+                optional: false,
             }],
         )
         .unwrap();
@@ -811,6 +822,7 @@ mod tests {
             vec![FieldDef {
                 name: "other".into(),
                 field_type: FieldType::Bool,
+                optional: false,
             }],
         );
         assert!(result.is_err());
@@ -825,6 +837,7 @@ mod tests {
                 vec![FieldDef {
                     name: "v".into(),
                     field_type: FieldType::Varint,
+                    optional: false,
                 }],
             )
             .unwrap();
@@ -853,6 +866,7 @@ mod tests {
                 vec![FieldDef {
                     name: "v".into(),
                     field_type: FieldType::Varint,
+                    optional: false,
                 }],
             )
             .unwrap();
@@ -910,6 +924,7 @@ mod tests {
                 vec![FieldDef {
                     name: "v".into(),
                     field_type: FieldType::Varint,
+                    optional: false,
                 }],
             )
             .unwrap();
@@ -1003,6 +1018,7 @@ mod tests {
                 vec![FieldDef {
                     name: "v".into(),
                     field_type: FieldType::Varint,
+                    optional: false,
                 }],
             )
             .unwrap();
@@ -1052,6 +1068,7 @@ mod tests {
                 vec![FieldDef {
                     name: "v".into(),
                     field_type: FieldType::Varint,
+                    optional: false,
                 }],
             )
             .unwrap();
