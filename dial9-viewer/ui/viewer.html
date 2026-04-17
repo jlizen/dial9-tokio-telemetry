@@ -467,7 +467,10 @@
                 <button id="btn-tz-mode" title="Toggle between UTC and local timezone for absolute timestamps" style="display:none">TZ: UTC</button>
                 <button id="btn-reset">New File</button>
             </div>
-            <div id="span-legend" style="display:none;padding:2px 12px;background:#1a1a2e;border-bottom:1px solid #333;font-size:0.78em;color:#aaa"></div>
+            <div id="span-legend" style="display:none;padding:2px 12px;background:#1a1a2e;border-bottom:1px solid #333;font-size:0.78em;color:#aaa">
+                <input id="span-filter" type="text" placeholder="Filter spans (name, key, or value)" style="background:#0f1629;border:1px solid #444;color:#ccc;padding:2px 6px;border-radius:3px;font-size:1em;width:220px;margin-right:8px">
+                <span id="span-legend-items"></span>
+            </div>
             <div id="main-area" tabindex="0" role="application" aria-label="Trace timeline">
                 <div id="selection-overlay"></div>
                 <canvas id="crosshair-overlay" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:10"></canvas>
@@ -643,6 +646,18 @@
                 return color;
             }
 
+            function spanMatchesFilter(span) {
+                if (!spanFilter) return true;
+                const f = spanFilter.toLowerCase();
+                if (span.spanName.toLowerCase().includes(f)) return true;
+                if (span.fields && typeof span.fields === "object") {
+                    for (const [k, v] of Object.entries(span.fields)) {
+                        if (k.toLowerCase().includes(f) || String(v).toLowerCase().includes(f)) return true;
+                    }
+                }
+                return false;
+            }
+
             function pollColorDim(startNs, endNs) {
                 const durUs = (endNs - startNs) / 1e3;
                 if (durUs > 1000) return "#803030"; // >1ms: muted red
@@ -761,6 +776,7 @@
             let spansByWorker = {}; // workerId → [{start, end, spanId, spanName, fields, parentSpanId, depth}]
             let spanMeta = new Map(); // spanId → {spanName, fields, parentSpanId}
             let spanMaxDepth = 0;
+            let spanFilter = ""; // free-text filter for span rendering
             // Lane canvases per worker (populated by buildLanes)
             let laneCanvases = {};
 
@@ -1126,8 +1142,12 @@
                         const items = [...allNames].sort().map(name =>
                             `<span style="display:inline-block;width:10px;height:10px;background:${spanColor(name)};border-radius:2px;margin-right:3px;vertical-align:middle"></span>${esc(name)}`
                         ).join("&nbsp;&nbsp;");
-                        legend.innerHTML = `<span style="color:#666">Spans:</span> ${items}`;
+                        document.getElementById("span-legend-items").innerHTML = `<span style="color:#666">Spans:</span> ${items}`;
                         legend.style.display = "block";
+                        document.getElementById("span-filter").addEventListener("input", (e) => {
+                            spanFilter = e.target.value;
+                            renderAll();
+                        });
                     }
                 }
                 // Show/hide sched panel button based on whether sched events exist
@@ -1618,6 +1638,7 @@
                             for (let i = lo; i < wSpans.length; i += step) {
                                 const s = wSpans[i];
                                 if (s.start > viewEnd) break;
+                                if (!spanMatchesFilter(s)) continue;
                                 const x = Math.max(0, nsToX(s.start, pw)) | 0;
                                 ctx.fillStyle = spanColor(s.spanName);
                                 ctx.globalAlpha = 0.6;
@@ -1630,6 +1651,7 @@
                             for (let i = lo; i < wSpans.length; i++) {
                                 const s = wSpans[i];
                                 if (s.start > viewEnd) break;
+                                if (!spanMatchesFilter(s)) continue;
                                 const x1 = Math.max(0, nsToX(s.start, pw)) | 0;
                                 const x2 = Math.min(pw, nsToX(s.end, pw)) | 0;
                                 const color = spanColor(s.spanName);
@@ -1655,6 +1677,7 @@
                             for (let i = lo; i < wSpans.length; i++) {
                                 const s = wSpans[i];
                                 if (s.start > viewEnd) break;
+                                if (!spanMatchesFilter(s)) continue;
                                 const x1 = Math.max(0, nsToX(s.start, pw));
                                 const x2 = Math.min(pw, nsToX(s.end, pw));
                                 const d = Math.min(s.depth || 0, maxRows - 1);
