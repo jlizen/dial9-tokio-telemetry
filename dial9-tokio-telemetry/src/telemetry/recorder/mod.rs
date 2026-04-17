@@ -2,7 +2,8 @@ mod event_writer;
 mod runtime_context;
 mod shared_state;
 
-pub(crate) use runtime_context::{RuntimeContext, current_worker_id};
+pub(crate) use runtime_context::RuntimeContext;
+pub use runtime_context::current_worker_id;
 pub(crate) use shared_state::SharedState;
 
 use event_writer::EventWriter;
