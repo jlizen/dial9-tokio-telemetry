@@ -123,3 +123,8 @@ harness = false
 [[bench]]
 name = "threadlocal_encode"
 harness = false
+
+[[bench]]
+name = "tracing_layer_bench"
+harness = false
+required-features = ["tracing-layer"]
