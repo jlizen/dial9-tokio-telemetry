@@ -786,7 +786,7 @@
             let laneCanvases = {};
 
             const LABEL_W = 100;
-            const LANE_H = 70;
+            const LANE_H = 60;
 
             // ── DOM refs ──
             const dropZone = document.getElementById("drop-zone");
@@ -1133,6 +1133,7 @@
                     infoEl.innerHTML = `<span class="filename">${esc(filename)}</span><span class="stats">${statsText}</span>`;
                 }
 
+                LANE_H = Object.keys(spansByWorker).length > 0 ? LANE_H_WITH_SPANS : LANE_H_NO_SPANS;
                 buildLanes();
                 updatePointsOfInterest();
 
