@@ -1,6 +1,28 @@
-//! Tracing subscriber layer for emitting span events into dial9 traces.
+//! Tracing subscriber layer that emits span events into dial9 traces.
+//!
+//! Requires the `tracing-layer` feature.
+//!
+//! # Usage
+//!
+//! ```ignore
+//! use dial9_tokio_telemetry::tracing_layer::Dial9TokioLayer;
+//! use tracing_subscriber::prelude::*;
+//!
+//! tracing_subscriber::registry()
+//!     .with(Dial9TokioLayer::new())
+//!     .init();
+//! ```
+//!
+//! The layer emits events only on threads owned by a dial9-traced runtime.
+//! On other threads, span enter/exit is silently skipped.
+//!
+//! # High-frequency spans
+//!
+//! Every span enter and exit produces a trace event. If you instrument tight
+//! loops, the volume can be large. Use `tracing-subscriber` filters (e.g.,
+//! `EnvFilter`, `Targets`) to control which spans reach this layer.
 
-use dial9_tokio_telemetry::telemetry::{
+use crate::telemetry::{
     Encodable, TelemetryHandle, ThreadLocalEncoder, WorkerId, clock_monotonic_ns, current_worker_id,
 };
 use dial9_trace_format::{InternedString, TraceEvent};
@@ -87,7 +109,7 @@ impl tracing::field::Visit for FieldVisitor<'_> {
 /// # Setup
 ///
 /// ```ignore
-/// use dial9_tracing::Dial9TokioLayer;
+/// use dial9_tokio_telemetry::tracing_layer::Dial9TokioLayer;
 /// use tracing_subscriber::prelude::*;
 ///
 /// tracing_subscriber::registry()
@@ -224,7 +246,7 @@ where
         let span_id = id.into_u64();
         let snap = span_snapshot(id, &ctx);
 
-        dial9_tokio_telemetry::telemetry::record_event(
+        crate::telemetry::record_event(
             EnterEncodable {
                 timestamp_ns: clock_monotonic_ns(),
                 worker_id,
@@ -246,7 +268,7 @@ where
         let span_id = id.into_u64();
         let snap = span_snapshot(id, &ctx);
 
-        dial9_tokio_telemetry::telemetry::record_event(
+        crate::telemetry::record_event(
             ExitEncodable {
                 timestamp_ns: clock_monotonic_ns(),
                 worker_id,

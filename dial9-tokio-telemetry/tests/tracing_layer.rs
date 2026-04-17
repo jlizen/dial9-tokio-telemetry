@@ -1,6 +1,6 @@
 use dial9_tokio_telemetry::telemetry::{RotatingWriter, TracedRuntime};
+use dial9_tokio_telemetry::tracing_layer::Dial9TokioLayer;
 use dial9_trace_format::types::FieldValueRef;
-use dial9_tracing::Dial9TokioLayer;
 use std::time::Duration;
 use tracing_subscriber::prelude::*;
 

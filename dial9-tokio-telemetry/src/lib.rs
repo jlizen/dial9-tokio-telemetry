@@ -19,6 +19,11 @@ pub(crate) mod rate_limit;
 pub mod telemetry;
 pub(crate) mod traced;
 
+#[cfg(feature = "tracing-layer")]
+#[cfg_attr(docsrs, doc(cfg(feature = "tracing-layer")))]
+/// Tracing subscriber layer for emitting span events into dial9 traces.
+pub mod tracing_layer;
+
 /// Unified configuration for the [`main`] macro.
 pub mod config;
 
