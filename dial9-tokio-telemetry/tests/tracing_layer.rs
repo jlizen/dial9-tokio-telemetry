@@ -1,28 +1,113 @@
 use dial9_tokio_telemetry::telemetry::{RotatingWriter, TracedRuntime};
 use dial9_tokio_telemetry::tracing_layer::Dial9TokioLayer;
 use dial9_trace_format::types::FieldValueRef;
+use std::collections::HashSet;
 use std::time::Duration;
 use tracing_subscriber::prelude::*;
 
+/// Helper: decode span events from a sealed trace file.
+struct SpanEvents {
+    enter_count: u32,
+    exit_count: u32,
+    enter_names: Vec<String>,
+    /// All (field_key, field_value) pairs seen on enter events.
+    enter_fields: Vec<(String, String)>,
+    /// All (field_key, field_value) pairs seen on exit events.
+    exit_fields: Vec<(String, String)>,
+    /// Whether any enter event had a non-zero parent_span_id.
+    saw_parent_span_id: bool,
+    /// Worker IDs seen on enter events.
+    worker_ids: HashSet<u64>,
+}
+
+fn decode_span_events(path: &std::path::Path) -> SpanEvents {
+    let data = std::fs::read(path).unwrap();
+    let mut decoder = dial9_trace_format::decoder::Decoder::new(&data).unwrap();
+
+    let mut result = SpanEvents {
+        enter_count: 0,
+        exit_count: 0,
+        enter_names: Vec::new(),
+        enter_fields: Vec::new(),
+        exit_fields: Vec::new(),
+        saw_parent_span_id: false,
+        worker_ids: HashSet::new(),
+    };
+
+    decoder
+        .for_each_event(|ev| match ev.name {
+            "SpanEnterEvent" => {
+                result.enter_count += 1;
+                for (field_def, field_val) in ev.schema.fields.iter().zip(ev.fields.iter()) {
+                    if field_def.name == "span_name"
+                        && let FieldValueRef::PooledString(id) = field_val
+                        && let Some(name) = ev.string_pool.get(*id)
+                    {
+                        result.enter_names.push(name.to_owned());
+                    }
+                    if field_def.name == "fields"
+                        && let FieldValueRef::StringMap(map_ref) = field_val
+                    {
+                        for (k, v) in map_ref.iter() {
+                            result.enter_fields.push((k.to_owned(), v.to_owned()));
+                        }
+                    }
+                    if field_def.name == "parent_span_id"
+                        && let FieldValueRef::Varint(v) = field_val
+                        && *v > 0
+                    {
+                        result.saw_parent_span_id = true;
+                    }
+                    if field_def.name == "worker_id"
+                        && let FieldValueRef::Varint(v) = field_val
+                    {
+                        result.worker_ids.insert(*v);
+                    }
+                }
+            }
+            "SpanExitEvent" => {
+                result.exit_count += 1;
+                for (field_def, field_val) in ev.schema.fields.iter().zip(ev.fields.iter()) {
+                    if field_def.name == "fields"
+                        && let FieldValueRef::StringMap(map_ref) = field_val
+                    {
+                        for (k, v) in map_ref.iter() {
+                            result.exit_fields.push((k.to_owned(), v.to_owned()));
+                        }
+                    }
+                }
+            }
+            _ => {}
+        })
+        .unwrap();
+
+    result
+}
+
 /// Verify that span enter/exit events appear in the trace with correct names,
-/// fields, and parent span IDs.
+/// fields, parent span IDs, and that on_record captures late fields.
 #[test]
 fn span_events_appear_in_trace() {
     let dir = tempfile::tempdir().unwrap();
     let trace_path = dir.path().join("trace.bin");
 
     let mut builder = tokio::runtime::Builder::new_multi_thread();
-    builder.worker_threads(2).enable_all();
+    builder.worker_threads(4).enable_all();
 
     let writer = RotatingWriter::single_file(&trace_path).unwrap();
     let (runtime, guard) = TracedRuntime::build_and_start(builder, writer).unwrap();
 
-    // Install the tracing subscriber with our layer.
-    // Must be global so worker threads see it.
     let subscriber = tracing_subscriber::registry().with(Dial9TokioLayer::new());
     tracing::subscriber::set_global_default(subscriber).expect("failed to set global subscriber");
 
     runtime.block_on(async {
+        // Test on_record: span with an empty field filled in later
+        async fn late_record_span() {
+            let span = tracing::info_span!("late_fields", answer = tracing::field::Empty);
+            span.record("answer", 42);
+            let _enter = span.enter();
+        }
+
         #[tracing::instrument(fields(user_id = 42))]
         async fn handle_request() {
             inner_op("redis").await;
@@ -34,9 +119,17 @@ fn span_events_appear_in_trace() {
             tokio::task::yield_now().await;
         }
 
-        for _ in 0..3 {
-            tokio::spawn(handle_request()).await.unwrap();
+        // Spawn across multiple workers for concurrency coverage
+        let mut handles = Vec::new();
+        for _ in 0..10 {
+            handles.push(tokio::spawn(handle_request()));
         }
+        for h in handles {
+            h.await.unwrap();
+        }
+
+        // Test on_record
+        tokio::spawn(late_record_span()).await.unwrap();
 
         // Wait for flush cycle
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -45,76 +138,86 @@ fn span_events_appear_in_trace() {
     drop(runtime);
     drop(guard);
 
-    // Decode the trace and find span events
     let sealed_path = dir.path().join("trace.0.bin");
-    let data = std::fs::read(&sealed_path).unwrap();
-    let mut decoder = dial9_trace_format::decoder::Decoder::new(&data).unwrap();
+    let events = decode_span_events(&sealed_path);
 
-    let mut enter_count = 0u32;
-    let mut exit_count = 0u32;
-    let mut enter_names: Vec<String> = Vec::new();
-    let mut saw_user_id_field = false;
-    let mut saw_parent_span_id = false;
-
-    decoder
-        .for_each_event(|ev| match ev.name {
-            "SpanEnterEvent" => {
-                enter_count += 1;
-                for (field_def, field_val) in ev.schema.fields.iter().zip(ev.fields.iter()) {
-                    if field_def.name == "span_name"
-                        && let FieldValueRef::PooledString(id) = field_val
-                        && let Some(name) = ev.string_pool.get(*id)
-                    {
-                        enter_names.push(name.to_owned());
-                    }
-                    if field_def.name == "fields"
-                        && let FieldValueRef::StringMap(map_ref) = field_val
-                    {
-                        for (k, _v) in map_ref.iter() {
-                            if k == "user_id" {
-                                saw_user_id_field = true;
-                            }
-                        }
-                    }
-                    if field_def.name == "parent_span_id"
-                        && let FieldValueRef::Varint(v) = field_val
-                        && *v > 0
-                    {
-                        saw_parent_span_id = true;
-                    }
-                }
-            }
-            "SpanExitEvent" => {
-                exit_count += 1;
-            }
-            _ => {}
-        })
-        .unwrap();
-
-    // 3 iterations x (1 handle_request + 2 inner_op) = 9 spans
-    // inner_op yields, so it gets entered twice per call (2 polls)
-    // handle_request also gets re-entered across the inner yields
+    // Basic enter/exit pairing
     assert!(
-        enter_count >= 9,
-        "expected at least 9 span enters, got {enter_count}"
+        events.enter_count >= 30,
+        "expected at least 30 span enters (10 x 3 spans), got {}",
+        events.enter_count
     );
-    assert_eq!(enter_count, exit_count, "enter/exit count mismatch");
-
-    assert!(
-        enter_names.contains(&"handle_request".to_string()),
-        "expected handle_request span, got: {enter_names:?}"
-    );
-    assert!(
-        enter_names.contains(&"inner_op".to_string()),
-        "expected inner_op span, got: {enter_names:?}"
+    assert_eq!(
+        events.enter_count, events.exit_count,
+        "enter/exit count mismatch"
     );
 
+    // Span names
     assert!(
-        saw_user_id_field,
-        "expected user_id field on handle_request span"
+        events.enter_names.contains(&"handle_request".to_string()),
+        "missing handle_request span"
     );
     assert!(
-        saw_parent_span_id,
-        "expected parent_span_id on inner_op spans (child of handle_request)"
+        events.enter_names.contains(&"inner_op".to_string()),
+        "missing inner_op span"
     );
+
+    // Fields from on_new_span
+    assert!(
+        events
+            .enter_fields
+            .iter()
+            .any(|(k, v)| k == "user_id" && v == "42"),
+        "missing user_id=42 field on enter"
+    );
+    assert!(
+        events
+            .exit_fields
+            .iter()
+            .any(|(k, v)| k == "user_id" && v == "42"),
+        "missing user_id=42 field on exit"
+    );
+
+    // Fields from on_record (late recording)
+    assert!(
+        events.enter_names.contains(&"late_fields".to_string()),
+        "missing late_fields span"
+    );
+    assert!(
+        events
+            .enter_fields
+            .iter()
+            .any(|(k, v)| k == "answer" && v == "42")
+            || events
+                .exit_fields
+                .iter()
+                .any(|(k, v)| k == "answer" && v == "42"),
+        "missing late-recorded answer=42 field"
+    );
+
+    // Parent span ID
+    assert!(
+        events.saw_parent_span_id,
+        "expected parent_span_id on child spans"
+    );
+
+    // Multi-worker: span events should come from more than one worker
+    assert!(
+        events.worker_ids.len() > 1,
+        "expected span events from multiple workers, got {:?}",
+        events.worker_ids
+    );
+}
+
+/// Verify the layer silently skips when no TelemetryHandle is present.
+#[test]
+fn no_telemetry_handle_does_not_panic() {
+    let subscriber = tracing_subscriber::registry().with(Dial9TokioLayer::new());
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    // This runs on a plain thread with no dial9 runtime, so no TelemetryHandle.
+    // The layer should silently skip without panicking.
+    let span = tracing::info_span!("orphan_span", key = "value");
+    let _enter = span.enter();
+    // If we get here without panicking, the test passes.
 }
