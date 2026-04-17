@@ -490,6 +490,71 @@
     };
   }
 
+  /**
+   * Build span data structures from custom events.
+   * Pairs SpanEnterEvent/SpanExitEvent into span intervals per worker,
+   * and builds a lookup table for span metadata (name, fields, parent).
+   * @param {Array<{name: string, timestamp: number, fields: Object}>} customEvents
+   * @returns {{
+   *   spansByWorker: Object<number, Array<{start: number, end: number, spanId: number, spanName: string, fields: Object, parentSpanId: number|null}>>,
+   *   spanMeta: Map<number, {spanName: string, fields: Object, parentSpanId: number|null}>,
+   * }}
+   */
+  function buildSpanData(customEvents) {
+    // Index: spanId+workerId → most recent enter timestamp
+    const openSpans = new Map(); // "spanId:workerId" → {timestamp, spanName, fields, parentSpanId}
+    const spansByWorker = {};
+    const spanMeta = new Map(); // spanId → {spanName, fields, parentSpanId}
+
+    for (const ev of customEvents) {
+      if (ev.name === "SpanEnterEvent") {
+        const v = ev.fields;
+        const workerId = Number(v.worker_id);
+        const spanId = Number(v.span_id);
+        const parentSpanId = v.parent_span_id != null ? Number(v.parent_span_id) : null;
+        const spanName = v.span_name || "unknown";
+        const fields = v.fields || {};
+
+        const key = `${spanId}:${workerId}`;
+        openSpans.set(key, {
+          timestamp: ev.timestamp,
+          spanName,
+          fields,
+          parentSpanId,
+        });
+
+        // Update metadata (latest fields win)
+        spanMeta.set(spanId, { spanName, fields, parentSpanId });
+      } else if (ev.name === "SpanExitEvent") {
+        const v = ev.fields;
+        const workerId = Number(v.worker_id);
+        const spanId = Number(v.span_id);
+
+        const key = `${spanId}:${workerId}`;
+        const enter = openSpans.get(key);
+        if (enter) {
+          openSpans.delete(key);
+          if (!spansByWorker[workerId]) spansByWorker[workerId] = [];
+          spansByWorker[workerId].push({
+            start: enter.timestamp,
+            end: ev.timestamp,
+            spanId,
+            spanName: enter.spanName,
+            fields: (v.fields && Object.keys(v.fields).length > 0) ? v.fields : enter.fields,
+            parentSpanId: enter.parentSpanId,
+          });
+        }
+      }
+    }
+
+    // Sort each worker's spans by start time
+    for (const spans of Object.values(spansByWorker)) {
+      spans.sort((a, b) => a.start - b.start);
+    }
+
+    return { spansByWorker, spanMeta };
+  }
+
   // Export for both browser and Node.js
   const analysisExports = {
     buildWorkerSpans,
@@ -500,6 +565,7 @@
     buildFlamegraphTree,
     flattenFlamegraph,
     buildFgData,
+    buildSpanData,
   };
 
   if (typeof module !== "undefined" && module.exports) {
