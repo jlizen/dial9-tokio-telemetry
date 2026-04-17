@@ -131,6 +131,28 @@ fn span_events_appear_in_trace() {
         // Test on_record
         tokio::spawn(late_record_span()).await.unwrap();
 
+        // Test explicit parent via span!(parent: ...)
+        tokio::spawn(async {
+            let parent = tracing::info_span!("explicit_parent");
+            let _guard = parent.enter();
+            let _child = tracing::info_span!(parent: &parent, "explicit_child").entered();
+        })
+        .await
+        .unwrap();
+
+        // Test explicit parent via .instrument()
+        tokio::spawn(async {
+            use tracing::Instrument;
+            let parent = tracing::info_span!("instrument_parent");
+            async {
+                tokio::task::yield_now().await;
+            }
+            .instrument(parent)
+            .await;
+        })
+        .await
+        .unwrap();
+
         // Wait for flush cycle
         tokio::time::sleep(Duration::from_millis(200)).await;
     });
@@ -195,10 +217,20 @@ fn span_events_appear_in_trace() {
         "missing late-recorded answer=42 field"
     );
 
-    // Parent span ID
+    // Parent span ID: explicit parents (span!(parent:) and .instrument()) should
+    // produce parent_span_id, but #[instrument] spans should not (contextual
+    // parenting is unreliable in multi-task runtimes).
     assert!(
         events.saw_parent_span_id,
-        "expected parent_span_id on child spans"
+        "expected parent_span_id from explicit parent spans (explicit_child or instrument_parent)"
+    );
+    assert!(
+        events.enter_names.contains(&"explicit_child".to_string()),
+        "missing explicit_child span"
+    );
+    assert!(
+        events.enter_names.contains(&"instrument_parent".to_string()),
+        "missing instrument_parent span"
     );
 
     // Multi-worker: span events should come from more than one worker

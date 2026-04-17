@@ -3169,9 +3169,10 @@
                                     }
                                 }
                                 if (hit.parentSpanId != null) {
-                                    const parent = spanMeta.get(hit.parentSpanId);
-                                    if (parent) {
-                                        spanInfo += `<br><span class="label">Parent:</span> <span class="value">${esc(parent.spanName)}</span>`;
+                                    // Find the parent span interval by ID and time overlap
+                                    const parentSpan = wSpans.find(s => s.spanId === hit.parentSpanId && s.start <= hit.start && s.end >= hit.end);
+                                    if (parentSpan) {
+                                        spanInfo += `<br><span class="label">Parent:</span> <span class="value">${esc(parentSpan.spanName)}</span>`;
                                     }
                                 }
                             }

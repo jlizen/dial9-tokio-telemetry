@@ -247,10 +247,7 @@ where
 
         let data = SpanData {
             name: attrs.metadata().name(),
-            parent_id: attrs
-                .parent()
-                .cloned()
-                .or_else(|| ctx.current_span().id().cloned()),
+            parent_id: attrs.parent().cloned(),
             fields,
         };
 
@@ -277,6 +274,12 @@ where
 
         let worker_id = current_worker_id();
         let span_id = id.into_u64();
+
+        // We only use explicit parents (span!(parent: &x, ..)), not contextual
+        // parents (ctx.current_span()), because contextual parenting is
+        // unreliable across tasks on the same worker thread. See:
+        // https://chesedo.me/blog/rust-tracing-incorrect-parent-spans-async-futures-joinset/
+        // The viewer infers nesting from timestamp containment instead.
         let snap = span_snapshot(id, &ctx);
 
         crate::telemetry::record_event(

@@ -411,6 +411,65 @@ async function main() {
     pass("Empty input produces empty output");
   }
 
+  function testBuildSpanDataDepth() {
+    // Three levels of nesting via explicit parent
+    const customEvents = [
+      { name: "SpanEnterEvent", timestamp: 1000, fields: { worker_id: 0, span_id: 1, parent_span_id: null, span_name: "root", fields: {} } },
+      { name: "SpanEnterEvent", timestamp: 1100, fields: { worker_id: 0, span_id: 2, parent_span_id: 1, span_name: "mid", fields: {} } },
+      { name: "SpanEnterEvent", timestamp: 1200, fields: { worker_id: 0, span_id: 3, parent_span_id: 2, span_name: "leaf", fields: {} } },
+      { name: "SpanExitEvent",  timestamp: 1300, fields: { worker_id: 0, span_id: 3, span_name: "leaf", fields: {} } },
+      { name: "SpanExitEvent",  timestamp: 1400, fields: { worker_id: 0, span_id: 2, span_name: "mid", fields: {} } },
+      { name: "SpanExitEvent",  timestamp: 1500, fields: { worker_id: 0, span_id: 1, span_name: "root", fields: {} } },
+    ];
+    const { spansByWorker, maxDepth } = buildSpanData(customEvents);
+    const spans = spansByWorker[0];
+    const root = spans.find(s => s.spanName === "root");
+    const mid = spans.find(s => s.spanName === "mid");
+    const leaf = spans.find(s => s.spanName === "leaf");
+    if (root.depth !== 0) fail(`root depth=${root.depth}, expected 0`);
+    if (mid.depth !== 1) fail(`mid depth=${mid.depth}, expected 1`);
+    if (leaf.depth !== 2) fail(`leaf depth=${leaf.depth}, expected 2`);
+    if (maxDepth !== 2) fail(`maxDepth=${maxDepth}, expected 2`);
+    pass("Depth computed correctly for 3-level nesting");
+  }
+
+  function testBuildSpanDataCycleDetection() {
+    // Cyclic parent chain: A -> B -> A (should not stack overflow)
+    const customEvents = [
+      { name: "SpanEnterEvent", timestamp: 1000, fields: { worker_id: 0, span_id: 1, parent_span_id: 2, span_name: "a", fields: {} } },
+      { name: "SpanEnterEvent", timestamp: 1100, fields: { worker_id: 0, span_id: 2, parent_span_id: 1, span_name: "b", fields: {} } },
+      { name: "SpanExitEvent",  timestamp: 1200, fields: { worker_id: 0, span_id: 2, span_name: "b", fields: {} } },
+      { name: "SpanExitEvent",  timestamp: 1300, fields: { worker_id: 0, span_id: 1, span_name: "a", fields: {} } },
+    ];
+    const { spansByWorker } = buildSpanData(customEvents);
+    if (!spansByWorker[0] || spansByWorker[0].length !== 2) fail("Expected 2 spans");
+    // Just verify it didn't crash; depths may be arbitrary due to cycle
+    pass("Cyclic parent chain does not stack overflow");
+  }
+
+  function testBuildSpanDataRecycledId() {
+    // Span ID 1 used first as "alpha", then recycled as "beta"
+    const customEvents = [
+      { name: "SpanEnterEvent", timestamp: 1000, fields: { worker_id: 0, span_id: 1, parent_span_id: null, span_name: "alpha", fields: {} } },
+      { name: "SpanExitEvent",  timestamp: 1100, fields: { worker_id: 0, span_id: 1, span_name: "alpha", fields: {} } },
+      // Same span_id reused with different name
+      { name: "SpanEnterEvent", timestamp: 2000, fields: { worker_id: 0, span_id: 1, parent_span_id: null, span_name: "beta", fields: {} } },
+      { name: "SpanExitEvent",  timestamp: 2100, fields: { worker_id: 0, span_id: 1, span_name: "beta", fields: {} } },
+      // Child of the recycled span
+      { name: "SpanEnterEvent", timestamp: 3000, fields: { worker_id: 0, span_id: 2, parent_span_id: 1, span_name: "child", fields: {} } },
+      { name: "SpanExitEvent",  timestamp: 3100, fields: { worker_id: 0, span_id: 2, span_name: "child", fields: {} } },
+    ];
+    const { spansByWorker } = buildSpanData(customEvents);
+    const spans = spansByWorker[0];
+    if (spans.length !== 3) fail(`Expected 3 spans, got ${spans.length}`);
+    const alpha = spans.find(s => s.spanName === "alpha");
+    const beta = spans.find(s => s.spanName === "beta");
+    if (!alpha || !beta) fail("Missing alpha or beta span");
+    // Both should exist as separate intervals despite same span_id
+    if (alpha.start !== 1000 || beta.start !== 2000) fail("Span intervals not distinct");
+    pass("Recycled span IDs produce separate intervals");
+  }
+
   // ── Regression: open PollStart at trace end must not create phantom poll (#194) ──
 
   function testOpenPollStartDiscarded() {
@@ -478,6 +537,9 @@ async function main() {
   testBuildSpanDataPairing();
   testBuildSpanDataParent();
   testBuildSpanDataEmpty();
+  testBuildSpanDataDepth();
+  testBuildSpanDataCycleDetection();
+  testBuildSpanDataRecycledId();
 
   console.log("\n✓ All analysis checks passed!");
 }

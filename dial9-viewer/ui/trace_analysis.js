@@ -523,7 +523,9 @@
           parentSpanId,
         });
 
-        // Update metadata (latest fields win)
+        // Best-effort metadata: always update so late-recorded fields are
+        // captured. Span IDs can be recycled by tracing, which may cause
+        // stale parent name lookups in the viewer tooltip.
         spanMeta.set(spanId, { spanName, fields, parentSpanId });
       } else if (ev.name === "SpanExitEvent") {
         const v = ev.fields;
@@ -554,12 +556,15 @@
 
     // Compute depth for each span by walking the parent chain
     const depthCache = new Map(); // spanId → depth
-    function getDepth(spanId) {
+    function getDepth(spanId, seen) {
       if (spanId == null) return -1;
       if (depthCache.has(spanId)) return depthCache.get(spanId);
+      if (seen && seen.has(spanId)) { depthCache.set(spanId, 0); return 0; } // cycle
       const meta = spanMeta.get(spanId);
       if (!meta) { depthCache.set(spanId, 0); return 0; }
-      const d = getDepth(meta.parentSpanId) + 1;
+      const visited = seen || new Set();
+      visited.add(spanId);
+      const d = getDepth(meta.parentSpanId, visited) + 1;
       depthCache.set(spanId, d);
       return d;
     }
