@@ -132,11 +132,7 @@ fn register_tid_if_needed(global_id: u64, shared: &SharedState) {
 ///
 /// This is a thread-local read with no synchronization overhead.
 pub fn current_worker_id() -> WorkerId {
-    GLOBAL_WORKER_ID.with(|cell| {
-        cell.get()
-            .map(WorkerId)
-            .unwrap_or(WorkerId::UNKNOWN)
-    })
+    GLOBAL_WORKER_ID.with(|cell| cell.get().map(WorkerId).unwrap_or(WorkerId::UNKNOWN))
 }
 
 // ── Event construction helpers ───────────────────────────────────────────────

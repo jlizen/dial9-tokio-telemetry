@@ -19,8 +19,33 @@
 //! # High-frequency spans
 //!
 //! Every span enter and exit produces a trace event. If you instrument tight
-//! loops, the volume can be large. Use `tracing-subscriber` filters (e.g.,
-//! `EnvFilter`, `Targets`) to control which spans reach this layer.
+//! loops, the volume can be large. Libraries like the AWS SDK emit many
+//! internal spans (`deserialization`, `serialization`, `try_attempt`, etc.)
+//! that can produce over 100K span events per second and quickly fill the
+//! trace buffer.
+//!
+//! Use a per-layer `tracing_subscriber::filter::Targets` filter to restrict
+//! which spans reach the dial9 layer. This keeps your fmt/logging layer
+//! unaffected while controlling trace volume:
+//!
+//! ```ignore
+//! use dial9_tokio_telemetry::tracing_layer::Dial9TokioLayer;
+//! use tracing_subscriber::prelude::*;
+//!
+//! tracing_subscriber::registry()
+//!     .with(tracing_subscriber::fmt::layer())
+//!     .with(
+//!         Dial9TokioLayer::new().with_filter(
+//!             tracing_subscriber::filter::Targets::new()
+//!                 .with_target("my_app", tracing::Level::TRACE)
+//!                 .with_default(tracing::Level::ERROR),
+//!         ),
+//!     )
+//!     .init();
+//! ```
+//!
+//! This captures all spans from `my_app` while filtering out noisy
+//! third-party spans (AWS SDK, hyper, tower, etc.).
 //!
 //! # Overhead
 //!

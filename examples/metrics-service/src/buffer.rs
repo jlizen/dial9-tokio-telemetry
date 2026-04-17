@@ -51,6 +51,7 @@ impl MetricsBuffer {
             .record(value);
     }
 
+    #[tracing::instrument(skip(self, ddb))]
     pub async fn flush_to_ddb(&self, ddb: &DdbClient) {
         let snapshot: HashMap<String, (f64, u64, f64, f64)> = {
             let mut guard = self.inner.lock().await;

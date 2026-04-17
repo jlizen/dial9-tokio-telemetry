@@ -13,6 +13,7 @@ const {
   buildFlamegraphTree,
   flattenFlamegraph,
   buildFgData,
+  buildSpanData,
 } = require("./trace_analysis.js");
 
 async function main() {
@@ -363,6 +364,53 @@ async function main() {
     pass("buildFgData returns null for empty samples");
   }
 
+  // ── buildSpanData ──
+
+  function testBuildSpanDataPairing() {
+    const customEvents = [
+      { name: "SpanEnterEvent", timestamp: 1000, fields: { worker_id: 0, span_id: 1, parent_span_id: null, span_name: "handle_request", fields: { user_id: "42" } } },
+      { name: "SpanEnterEvent", timestamp: 1100, fields: { worker_id: 0, span_id: 2, parent_span_id: 1, span_name: "redis_get", fields: { key: "foo" } } },
+      { name: "SpanExitEvent",  timestamp: 1200, fields: { worker_id: 0, span_id: 2, span_name: "redis_get", fields: { key: "foo" } } },
+      { name: "SpanExitEvent",  timestamp: 1300, fields: { worker_id: 0, span_id: 1, span_name: "handle_request", fields: { user_id: "42" } } },
+    ];
+    const { spansByWorker, spanMeta } = buildSpanData(customEvents);
+    const w0 = spansByWorker[0] || [];
+    if (w0.length !== 2) fail(`Expected 2 span intervals on worker 0, got ${w0.length}`);
+    if (w0[0].spanName !== "handle_request" && w0[1].spanName !== "handle_request")
+      fail("Missing handle_request span");
+    if (w0[0].spanName !== "redis_get" && w0[1].spanName !== "redis_get")
+      fail("Missing redis_get span");
+    // Verify sorted by start time
+    if (w0[0].start > w0[1].start) fail("Spans not sorted by start time");
+    // Verify enter/exit pairing
+    const redis = w0.find(s => s.spanName === "redis_get");
+    if (redis.start !== 1100 || redis.end !== 1200) fail("redis_get timing wrong");
+    if (!spanMeta.has(1) || !spanMeta.has(2)) fail("spanMeta missing entries");
+    pass(`${w0.length} span intervals paired correctly`);
+  }
+
+  function testBuildSpanDataParent() {
+    const customEvents = [
+      { name: "SpanEnterEvent", timestamp: 1000, fields: { worker_id: 0, span_id: 10, parent_span_id: null, span_name: "root", fields: {} } },
+      { name: "SpanEnterEvent", timestamp: 1100, fields: { worker_id: 0, span_id: 20, parent_span_id: 10, span_name: "child", fields: {} } },
+      { name: "SpanExitEvent",  timestamp: 1200, fields: { worker_id: 0, span_id: 20, span_name: "child", fields: {} } },
+      { name: "SpanExitEvent",  timestamp: 1300, fields: { worker_id: 0, span_id: 10, span_name: "root", fields: {} } },
+    ];
+    const { spansByWorker } = buildSpanData(customEvents);
+    const child = spansByWorker[0].find(s => s.spanName === "child");
+    if (child.parentSpanId !== 10) fail(`Expected parentSpanId=10, got ${child.parentSpanId}`);
+    const root = spansByWorker[0].find(s => s.spanName === "root");
+    if (root.parentSpanId !== null) fail(`Expected root parentSpanId=null, got ${root.parentSpanId}`);
+    pass("Parent span IDs preserved correctly");
+  }
+
+  function testBuildSpanDataEmpty() {
+    const { spansByWorker, spanMeta } = buildSpanData([]);
+    if (Object.keys(spansByWorker).length !== 0) fail("Expected empty spansByWorker");
+    if (spanMeta.size !== 0) fail("Expected empty spanMeta");
+    pass("Empty input produces empty output");
+  }
+
   // ── Regression: open PollStart at trace end must not create phantom poll (#194) ──
 
   function testOpenPollStartDiscarded() {
@@ -425,6 +473,11 @@ async function main() {
   testFlattenFlamegraph();
   testBuildFgData();
   testBuildFgDataEmpty();
+
+  console.log("\nbuildSpanData:");
+  testBuildSpanDataPairing();
+  testBuildSpanDataParent();
+  testBuildSpanDataEmpty();
 
   console.log("\n✓ All analysis checks passed!");
 }

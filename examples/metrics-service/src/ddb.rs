@@ -93,6 +93,7 @@ impl DdbClient {
         }
     }
 
+    #[tracing::instrument(skip(self))]
     pub async fn put_aggregate(
         &self,
         name: &str,
@@ -116,6 +117,7 @@ impl DdbClient {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self))]
     pub async fn query_metric(
         &self,
         name: &str,

@@ -11,6 +11,7 @@ use clap::Parser;
 #[cfg(target_os = "linux")]
 use dial9_tokio_telemetry::telemetry::cpu_profile::{CpuProfilingConfig, SchedEventConfig};
 use dial9_tokio_telemetry::telemetry::{RotatingWriter, TelemetryHandle, TracedRuntime};
+use dial9_tokio_telemetry::tracing_layer::Dial9TokioLayer;
 use tokio::runtime::Builder;
 use tokio_util::sync::CancellationToken;
 
@@ -111,10 +112,22 @@ fn prewarm_fd_table(target: libc::c_int) {
 }
 
 fn main() -> std::io::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info,dial9_worker=debug".parse().unwrap()),
+    use tracing_subscriber::prelude::*;
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_target(false)
+                .with_filter(
+                    tracing_subscriber::EnvFilter::try_from_default_env()
+                        .unwrap_or_else(|_| "info,dial9_worker=debug".parse().unwrap()),
+                ),
+        )
+        .with(
+            Dial9TokioLayer::new().with_filter(
+                tracing_subscriber::filter::Targets::new()
+                    .with_target("metrics_service", tracing::Level::TRACE)
+                    .with_default(tracing::Level::ERROR),
+            ),
         )
         .init();
 
@@ -132,8 +145,8 @@ fn main() -> std::io::Result<()> {
     if args.demo {
         args.run_duration = 4;
         args.worker_threads = 2;
-        args.trace_max_file_size = 5_000_000;
-        args.trace_max_total_size = 5_000_000;
+        args.trace_max_file_size = 20_000_000;
+        args.trace_max_total_size = 20_000_000;
     }
 
     let writer = RotatingWriter::builder()
