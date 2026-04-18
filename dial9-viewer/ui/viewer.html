@@ -761,6 +761,7 @@
             let currentPoiIndex = -1;
             // Task selection state
             let selectedTaskId = null;
+            let selectedSpanId = null; // when a span bar is clicked, highlight all polls containing this span
             // Active task count timeline: [{t, count}]
             let activeTaskSamples = [];
             // First poll time per task: taskId → timestamp (ns)
@@ -1747,6 +1748,25 @@
                     }
                 }
 
+                // Highlight polls containing the selected span
+                if (selectedSpanId != null) {
+                    const wSpans2 = spansByWorker[workerId];
+                    if (wSpans2) {
+                        for (const s of wSpans2) {
+                            if (s.spanId !== selectedSpanId) continue;
+                            // Find the poll that contains this span interval
+                            const poll = findSpanAt(spans.polls, s.start);
+                            if (poll) {
+                                const x1 = Math.max(0, nsToX(poll.start, pw));
+                                const x2 = Math.min(pw, nsToX(poll.end, pw));
+                                ctx.strokeStyle = "#ffeb3b";
+                                ctx.lineWidth = 2;
+                                ctx.strokeRect(x1, bandTop, Math.max(x2 - x1, 4), bandH);
+                            }
+                        }
+                    }
+                }
+
                 // Draw wake event markers on this worker lane (only when a task is selected)
                 if (selectedTaskId) {
                     const wakes = wakesByWorker[workerId];
@@ -2666,6 +2686,28 @@
                     hideStackPopup();
                 }
 
+                // Check if a span bar was clicked
+                const wSpans = spansByWorker[w];
+                let clickedSpanId = null;
+                if (wSpans && wSpans.length > 0) {
+                    let lo = 0, hi = wSpans.length - 1, hit = null;
+                    while (lo <= hi) {
+                        const mid = (lo + hi) >> 1;
+                        if (wSpans[mid].end < ns) lo = mid + 1;
+                        else if (wSpans[mid].start > ns) hi = mid - 1;
+                        else { hit = wSpans[mid]; break; }
+                    }
+                    if (hit) clickedSpanId = hit.spanId;
+                }
+
+                if (clickedSpanId != null) {
+                    selectedSpanId = (clickedSpanId !== selectedSpanId) ? clickedSpanId : null;
+                    selectedTaskId = null;
+                    renderAll();
+                    return;
+                }
+
+                selectedSpanId = null;
                 selectedTaskId = (found && found !== selectedTaskId) ? found : null;
                 renderAll();
             });
