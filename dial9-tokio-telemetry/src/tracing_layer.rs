@@ -24,7 +24,7 @@
 //! that can produce over 100K span events per second and quickly fill the
 //! trace buffer.
 //!
-//! Use a per-layer `tracing_subscriber::filter::Targets` filter to restrict
+//! You can use per-layer `tracing_subscriber::filter::Targets` filter to restrict
 //! which spans reach the dial9 layer. This keeps your fmt/logging layer
 //! unaffected while controlling trace volume:
 //!
@@ -37,8 +37,8 @@
 //!     .with(
 //!         Dial9TokioLayer::new().with_filter(
 //!             tracing_subscriber::filter::Targets::new()
-//!                 .with_target("my_app", tracing::Level::TRACE)
-//!                 .with_default(tracing::Level::ERROR),
+//!                 .with_target("my_app", tracing::Level::DEBUG)
+//!                 .with_default(tracing::Level::WARN),
 //!         ),
 //!     )
 //!     .init();
@@ -49,84 +49,146 @@
 //!
 //! # Overhead
 //!
-//! Each span enter+exit pair costs roughly **250ns** (measured with
+//! Each span enter+exit pair costs roughly **220ns** (measured with
 //! `NullWriter` to isolate encoding from I/O). This scales linearly with
-//! nesting depth (~250ns per level). Adding a few fields to a span adds
-//! under 50ns. This is comparable to the cost of a single poll event, so
+//! nesting depth (~220ns per level). Adding a few fields to a span adds
+//! under 40ns. This is comparable to the cost of a single poll event, so
 //! the layer is suitable for production use with appropriate span filtering.
 
-use crate::telemetry::{
-    Encodable, TelemetryHandle, ThreadLocalEncoder, WorkerId, clock_monotonic_ns, current_worker_id,
-};
-use dial9_trace_format::{InternedString, TraceEvent};
+use crate::telemetry::{TelemetryHandle, clock_monotonic_ns, current_worker_id};
+use dial9_trace_format::encoder::Schema;
+use dial9_trace_format::schema::FieldDef;
+use dial9_trace_format::types::{FieldType, FieldValue};
+use std::collections::HashMap;
 use std::fmt;
+use std::sync::Mutex;
+use tracing::callsite::Identifier;
 use tracing::span;
 use tracing_subscriber::{Layer, layer::Context, registry::LookupSpan};
 
-// ── Wire events ─────────────────────────────────────────────────────────────
+// ── Per-callsite schema cache ───────────────────────────────────────────────
 
-/// Wire event emitted when a tracing span is entered.
-#[derive(TraceEvent)]
-struct SpanEnterEvent {
-    #[traceevent(timestamp)]
-    timestamp_ns: u64,
-    worker_id: WorkerId,
-    span_id: u64,
-    parent_span_id: Option<u64>,
-    span_name: InternedString,
-    fields: Vec<(String, String)>,
+/// Cached schemas for a single callsite (one for enter, one for exit).
+#[derive(Clone)]
+struct CallsiteSchemas {
+    enter: Schema,
+    exit: Schema,
+    /// Field names from the callsite metadata, in order.
+    field_names: Vec<&'static str>,
 }
 
-/// Wire event emitted when a tracing span is exited.
-#[derive(TraceEvent)]
-struct SpanExitEvent {
-    #[traceevent(timestamp)]
-    timestamp_ns: u64,
-    worker_id: WorkerId,
-    span_id: u64,
-    span_name: InternedString,
-    fields: Vec<(String, String)>,
+/// Build the enter and exit schemas for a callsite.
+fn build_callsite_schemas(meta: &'static tracing::Metadata<'static>) -> CallsiteSchemas {
+    let file = meta.file().unwrap_or("unknown");
+    let line = meta.line().unwrap_or(0);
+    let schema_id = format!("{}::{}:{}:{}", meta.target(), meta.name(), file, line);
+
+    // Base fields present on all span events
+    let mut enter_fields = vec![
+        FieldDef {
+            name: "worker_id".into(),
+            field_type: FieldType::Varint,
+        },
+        FieldDef {
+            name: "span_id".into(),
+            field_type: FieldType::Varint,
+        },
+        FieldDef {
+            name: "parent_span_id".into(),
+            field_type: FieldType::OptionalVarint,
+        },
+        FieldDef {
+            name: "span_name".into(),
+            field_type: FieldType::PooledString,
+        },
+    ];
+    let mut exit_fields = vec![
+        FieldDef {
+            name: "worker_id".into(),
+            field_type: FieldType::Varint,
+        },
+        FieldDef {
+            name: "span_id".into(),
+            field_type: FieldType::Varint,
+        },
+        FieldDef {
+            name: "span_name".into(),
+            field_type: FieldType::PooledString,
+        },
+    ];
+
+    // Add user-defined fields as optional interned strings
+    let mut field_names = Vec::new();
+    for field in meta.fields() {
+        let name = field.name();
+        field_names.push(name);
+        let def = FieldDef {
+            name: name.to_string(),
+            field_type: FieldType::OptionalPooledString,
+        };
+        enter_fields.push(def.clone());
+        exit_fields.push(def);
+    }
+
+    CallsiteSchemas {
+        enter: Schema::new(&format!("SpanEnter:{schema_id}"), enter_fields),
+        exit: Schema::new(&format!("SpanExit:{schema_id}"), exit_fields),
+        field_names,
+    }
 }
 
 // ── Per-span storage ────────────────────────────────────────────────────────
 
 /// Data stored in span extensions, captured at `on_new_span` and updated by `on_record`.
-#[derive(Debug, Clone)]
 struct SpanData {
-    name: &'static str,
+    meta: &'static tracing::Metadata<'static>,
     parent_id: Option<span::Id>,
-    fields: Vec<(String, String)>,
+    /// Field values keyed by field name.
+    field_values: Vec<(&'static str, String)>,
 }
 
-/// Visitor that collects span field values into a `Vec<(String, String)>`.
+impl fmt::Debug for SpanData {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SpanData")
+            .field("name", &self.meta.name())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Visitor that collects span field values.
 struct FieldVisitor<'a> {
-    fields: &'a mut Vec<(String, String)>,
+    values: &'a mut Vec<(&'static str, String)>,
 }
 
 impl tracing::field::Visit for FieldVisitor<'_> {
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn fmt::Debug) {
-        self.fields
-            .push((field.name().to_owned(), format!("{value:?}")));
+        self.upsert(field.name(), format!("{value:?}"));
     }
 
     fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
-        self.fields
-            .push((field.name().to_owned(), value.to_owned()));
+        self.upsert(field.name(), value.to_owned());
     }
 
     fn record_i64(&mut self, field: &tracing::field::Field, value: i64) {
-        self.fields
-            .push((field.name().to_owned(), value.to_string()));
+        self.upsert(field.name(), value.to_string());
     }
 
     fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
-        self.fields
-            .push((field.name().to_owned(), value.to_string()));
+        self.upsert(field.name(), value.to_string());
     }
 
     fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
-        self.fields
-            .push((field.name().to_owned(), value.to_string()));
+        self.upsert(field.name(), value.to_string());
+    }
+}
+
+impl FieldVisitor<'_> {
+    fn upsert(&mut self, name: &'static str, value: String) {
+        if let Some(entry) = self.values.iter_mut().find(|(k, _)| *k == name) {
+            entry.1 = value;
+        } else {
+            self.values.push((name, value));
+        }
     }
 }
 
@@ -135,9 +197,9 @@ impl tracing::field::Visit for FieldVisitor<'_> {
 /// A [`tracing_subscriber::Layer`] that emits span enter/exit events into
 /// the dial9 trace buffer.
 ///
-/// Span events land in the same thread-local buffer as poll, park, and wake
-/// events, carrying monotonic timestamps for correlation. The viewer renders
-/// them as nested bars within poll blocks.
+/// Each unique callsite gets its own wire schema with typed fields,
+/// avoiding the overhead of a generic `StringMap` encoding. Field values
+/// are interned as `PooledString`s for compact wire representation.
 ///
 /// # Setup
 ///
@@ -149,15 +211,31 @@ impl tracing::field::Visit for FieldVisitor<'_> {
 ///     .with(Dial9TokioLayer::new())
 ///     .init();
 /// ```
-#[derive(Debug)]
 pub struct Dial9TokioLayer {
-    _private: (),
+    schemas: Mutex<HashMap<Identifier, CallsiteSchemas>>,
+}
+
+impl fmt::Debug for Dial9TokioLayer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Dial9TokioLayer").finish_non_exhaustive()
+    }
 }
 
 impl Dial9TokioLayer {
     /// Create a new layer.
     pub fn new() -> Self {
-        Self { _private: () }
+        Self {
+            schemas: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn get_schemas(&self, meta: &'static tracing::Metadata<'static>) -> CallsiteSchemas {
+        let id = meta.callsite();
+        let mut cache = self.schemas.lock().unwrap();
+        cache
+            .entry(id)
+            .or_insert_with(|| build_callsite_schemas(meta))
+            .clone()
     }
 }
 
@@ -167,72 +245,12 @@ impl Default for Dial9TokioLayer {
     }
 }
 
-/// Snapshot of span data needed for emitting events.
-struct SpanSnapshot {
-    name: &'static str,
-    fields: Vec<(String, String)>,
-    parent_span_id: Option<u64>,
-}
-
-/// Read a span's own data from extensions.
-fn span_snapshot<S>(id: &span::Id, ctx: &Context<'_, S>) -> Option<SpanSnapshot>
-where
-    S: tracing::Subscriber + for<'a> LookupSpan<'a>,
-{
-    let span = ctx.span(id)?;
-    let ext = span.extensions();
-    let data = ext.get::<SpanData>()?;
-    Some(SpanSnapshot {
-        name: data.name,
-        fields: data.fields.clone(),
-        parent_span_id: data.parent_id.as_ref().map(|id| id.into_u64()),
-    })
-}
-
-/// Enter event that interns the span name during encoding.
-struct EnterEncodable {
-    timestamp_ns: u64,
-    worker_id: WorkerId,
-    span_id: u64,
-    parent_span_id: Option<u64>,
-    span_name: String,
-    fields: Vec<(String, String)>,
-}
-
-impl Encodable for EnterEncodable {
-    fn encode(&self, enc: &mut ThreadLocalEncoder<'_>) {
-        let interned_name = enc.intern_string(&self.span_name);
-        enc.encode(&SpanEnterEvent {
-            timestamp_ns: self.timestamp_ns,
-            worker_id: self.worker_id,
-            span_id: self.span_id,
-            parent_span_id: self.parent_span_id,
-            span_name: interned_name,
-            fields: self.fields.clone(),
-        });
-    }
-}
-
-/// Exit event that interns the span name during encoding.
-struct ExitEncodable {
-    timestamp_ns: u64,
-    worker_id: WorkerId,
-    span_id: u64,
-    span_name: String,
-    fields: Vec<(String, String)>,
-}
-
-impl Encodable for ExitEncodable {
-    fn encode(&self, enc: &mut ThreadLocalEncoder<'_>) {
-        let interned_name = enc.intern_string(&self.span_name);
-        enc.encode(&SpanExitEvent {
-            timestamp_ns: self.timestamp_ns,
-            worker_id: self.worker_id,
-            span_id: self.span_id,
-            span_name: interned_name,
-            fields: self.fields.clone(),
-        });
-    }
+/// Look up a field value by name in the span's field list.
+fn field_value<'a>(fields: &'a [(&str, String)], name: &str) -> Option<&'a str> {
+    fields
+        .iter()
+        .find(|(k, _)| *k == name)
+        .map(|(_, v)| v.as_str())
 }
 
 impl<S> Layer<S> for Dial9TokioLayer
@@ -240,15 +258,15 @@ where
     S: tracing::Subscriber + for<'a> LookupSpan<'a>,
 {
     fn on_new_span(&self, attrs: &span::Attributes<'_>, id: &span::Id, ctx: Context<'_, S>) {
-        let mut fields = Vec::new();
+        let mut field_values = Vec::new();
         attrs.record(&mut FieldVisitor {
-            fields: &mut fields,
+            values: &mut field_values,
         });
 
         let data = SpanData {
-            name: attrs.metadata().name(),
+            meta: attrs.metadata(),
             parent_id: attrs.parent().cloned(),
-            fields,
+            field_values,
         };
 
         if let Some(span) = ctx.span(id) {
@@ -261,7 +279,7 @@ where
             let mut extensions = span.extensions_mut();
             if let Some(data) = extensions.get_mut::<SpanData>() {
                 values.record(&mut FieldVisitor {
-                    fields: &mut data.fields,
+                    values: &mut data.field_values,
                 });
             }
         }
@@ -274,25 +292,43 @@ where
 
         let worker_id = current_worker_id();
         let span_id = id.into_u64();
+        let ts = clock_monotonic_ns();
+
+        let Some(span_ref) = ctx.span(id) else { return };
+        let ext = span_ref.extensions();
+        let Some(data) = ext.get::<SpanData>() else {
+            return;
+        };
+
+        let schemas = self.get_schemas(data.meta);
 
         // We only use explicit parents (span!(parent: &x, ..)), not contextual
         // parents (ctx.current_span()), because contextual parenting is
         // unreliable across tasks on the same worker thread. See:
         // https://chesedo.me/blog/rust-tracing-incorrect-parent-spans-async-futures-joinset/
         // The viewer infers nesting from timestamp containment instead.
-        let snap = span_snapshot(id, &ctx);
+        let parent_span_id = data.parent_id.as_ref().map(|id| id.into_u64());
+        let span_name = data.meta.name();
 
-        crate::telemetry::record_event(
-            EnterEncodable {
-                timestamp_ns: clock_monotonic_ns(),
-                worker_id,
-                span_id,
-                parent_span_id: snap.as_ref().and_then(|s| s.parent_span_id),
-                span_name: snap.as_ref().map_or("unknown", |s| s.name).to_owned(),
-                fields: snap.map(|s| s.fields).unwrap_or_default(),
-            },
-            &handle,
-        );
+        // Encode directly into the thread-local buffer (no clone needed)
+        handle.with_encoder(|enc| {
+            let mut values = Vec::with_capacity(5 + schemas.field_names.len());
+            values.push(FieldValue::Varint(ts));
+            values.push(FieldValue::Varint(worker_id.as_u64()));
+            values.push(FieldValue::Varint(span_id));
+            match parent_span_id {
+                Some(pid) => values.push(FieldValue::Varint(pid)),
+                None => values.push(FieldValue::None),
+            }
+            values.push(FieldValue::PooledString(enc.intern_string(span_name)));
+            for &name in &schemas.field_names {
+                match field_value(&data.field_values, name) {
+                    Some(v) => values.push(FieldValue::PooledString(enc.intern_string(v))),
+                    None => values.push(FieldValue::None),
+                }
+            }
+            enc.write_event(&schemas.enter, &values);
+        });
     }
 
     fn on_exit(&self, id: &span::Id, ctx: Context<'_, S>) {
@@ -302,17 +338,30 @@ where
 
         let worker_id = current_worker_id();
         let span_id = id.into_u64();
-        let snap = span_snapshot(id, &ctx);
+        let ts = clock_monotonic_ns();
 
-        crate::telemetry::record_event(
-            ExitEncodable {
-                timestamp_ns: clock_monotonic_ns(),
-                worker_id,
-                span_id,
-                span_name: snap.as_ref().map_or("unknown", |s| s.name).to_owned(),
-                fields: snap.map(|s| s.fields).unwrap_or_default(),
-            },
-            &handle,
-        );
+        let Some(span_ref) = ctx.span(id) else { return };
+        let ext = span_ref.extensions();
+        let Some(data) = ext.get::<SpanData>() else {
+            return;
+        };
+
+        let schemas = self.get_schemas(data.meta);
+        let span_name = data.meta.name();
+
+        handle.with_encoder(|enc| {
+            let mut values = Vec::with_capacity(4 + schemas.field_names.len());
+            values.push(FieldValue::Varint(ts));
+            values.push(FieldValue::Varint(worker_id.as_u64()));
+            values.push(FieldValue::Varint(span_id));
+            values.push(FieldValue::PooledString(enc.intern_string(span_name)));
+            for &name in &schemas.field_names {
+                match field_value(&data.field_values, name) {
+                    Some(v) => values.push(FieldValue::PooledString(enc.intern_string(v))),
+                    None => values.push(FieldValue::None),
+                }
+            }
+            enc.write_event(&schemas.exit, &values);
+        });
     }
 }

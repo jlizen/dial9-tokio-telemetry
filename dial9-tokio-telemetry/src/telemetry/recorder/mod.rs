@@ -363,6 +363,19 @@ impl TelemetryHandle {
         self.shared.record_encodable_event(event);
     }
 
+    /// Run a closure with direct access to the thread-local encoder.
+    ///
+    /// Use this for dynamic schema encoding where you need to intern strings
+    /// and write events without an intermediate [`Encodable`] struct.
+    // TODO(GH-XXX): consider making this public as an alternative to record_event
+    // for zero-copy dynamic schema encoding
+    pub(crate) fn with_encoder(
+        &self,
+        f: impl FnOnce(&mut crate::telemetry::buffer::ThreadLocalEncoder<'_>),
+    ) {
+        self.shared.with_encoder(f);
+    }
+
     /// Spawn a future wrapped with wake-event tracking.
     #[track_caller]
     pub fn spawn<F>(&self, future: F) -> tokio::task::JoinHandle<F::Output>

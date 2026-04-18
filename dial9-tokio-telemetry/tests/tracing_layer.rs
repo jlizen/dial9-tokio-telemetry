@@ -18,6 +18,8 @@ struct SpanEvents {
     saw_parent_span_id: bool,
     /// Worker IDs seen on enter events.
     worker_ids: HashSet<u64>,
+    /// Unique schema names seen for enter events.
+    enter_schema_names: HashSet<String>,
 }
 
 fn decode_span_events(path: &std::path::Path) -> SpanEvents {
@@ -32,25 +34,20 @@ fn decode_span_events(path: &std::path::Path) -> SpanEvents {
         exit_fields: Vec::new(),
         saw_parent_span_id: false,
         worker_ids: HashSet::new(),
+        enter_schema_names: HashSet::new(),
     };
 
     decoder
-        .for_each_event(|ev| match ev.name {
-            "SpanEnterEvent" => {
+        .for_each_event(|ev| {
+            if ev.name.starts_with("SpanEnter:") {
                 result.enter_count += 1;
+                result.enter_schema_names.insert(ev.name.to_owned());
                 for (field_def, field_val) in ev.schema.fields.iter().zip(ev.fields.iter()) {
                     if field_def.name == "span_name"
                         && let FieldValueRef::PooledString(id) = field_val
                         && let Some(name) = ev.string_pool.get(*id)
                     {
                         result.enter_names.push(name.to_owned());
-                    }
-                    if field_def.name == "fields"
-                        && let FieldValueRef::StringMap(map_ref) = field_val
-                    {
-                        for (k, v) in map_ref.iter() {
-                            result.enter_fields.push((k.to_owned(), v.to_owned()));
-                        }
                     }
                     if field_def.name == "parent_span_id"
                         && let FieldValueRef::Varint(v) = field_val
@@ -63,21 +60,30 @@ fn decode_span_events(path: &std::path::Path) -> SpanEvents {
                     {
                         result.worker_ids.insert(*v);
                     }
+                    // User-defined fields are optional pooled strings
+                    if !["worker_id", "span_id", "parent_span_id", "span_name"]
+                        .contains(&field_def.name.as_str())
+                        && let FieldValueRef::PooledString(id) = field_val
+                        && let Some(v) = ev.string_pool.get(*id)
+                    {
+                        result
+                            .enter_fields
+                            .push((field_def.name.clone(), v.to_owned()));
+                    }
                 }
-            }
-            "SpanExitEvent" => {
+            } else if ev.name.starts_with("SpanExit:") {
                 result.exit_count += 1;
                 for (field_def, field_val) in ev.schema.fields.iter().zip(ev.fields.iter()) {
-                    if field_def.name == "fields"
-                        && let FieldValueRef::StringMap(map_ref) = field_val
+                    if !["worker_id", "span_id", "span_name"].contains(&field_def.name.as_str())
+                        && let FieldValueRef::PooledString(id) = field_val
+                        && let Some(v) = ev.string_pool.get(*id)
                     {
-                        for (k, v) in map_ref.iter() {
-                            result.exit_fields.push((k.to_owned(), v.to_owned()));
-                        }
+                        result
+                            .exit_fields
+                            .push((field_def.name.clone(), v.to_owned()));
                     }
                 }
             }
-            _ => {}
         })
         .unwrap();
 
@@ -229,7 +235,9 @@ fn span_events_appear_in_trace() {
         "missing explicit_child span"
     );
     assert!(
-        events.enter_names.contains(&"instrument_parent".to_string()),
+        events
+            .enter_names
+            .contains(&"instrument_parent".to_string()),
         "missing instrument_parent span"
     );
 
@@ -238,6 +246,28 @@ fn span_events_appear_in_trace() {
         events.worker_ids.len() > 1,
         "expected span events from multiple workers, got {:?}",
         events.worker_ids
+    );
+
+    // Callsite schema dedup: multiple calls to the same #[instrument] function
+    // should share a single schema. We have handle_request, inner_op,
+    // late_fields, explicit_parent, explicit_child, instrument_parent = 6 callsites.
+    // Each gets one SpanEnter schema.
+    assert!(
+        events.enter_schema_names.len() <= 6,
+        "expected at most 6 unique enter schemas (one per callsite), got {}: {:?}",
+        events.enter_schema_names.len(),
+        events.enter_schema_names
+    );
+    // handle_request is called 10 times but should produce only 1 schema
+    let hr_schemas: Vec<_> = events
+        .enter_schema_names
+        .iter()
+        .filter(|n| n.contains("handle_request"))
+        .collect();
+    assert_eq!(
+        hr_schemas.len(),
+        1,
+        "expected 1 schema for handle_request, got {hr_schemas:?}"
     );
 }
 
