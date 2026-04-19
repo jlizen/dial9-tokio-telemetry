@@ -1198,6 +1198,7 @@
                                     if (selectedSpanNames.has(name)) selectedSpanNames.delete(name);
                                     else selectedSpanNames.add(name);
                                     rebuildChips();
+                                    buildFilteredSpans();
                                     renderAll();
                                 });
                             }
@@ -1206,6 +1207,7 @@
                         document.getElementById("btn-span-clear-names").addEventListener("click", () => {
                             selectedSpanNames.clear();
                             rebuildChips();
+                            buildFilteredSpans();
                             renderAll();
                         });
                         legend.style.display = "block";
@@ -1213,23 +1215,7 @@
                         document.getElementById("span-filter").addEventListener("input", (e) => {
                             spanFilter = e.target.value;
                             document.getElementById("btn-span-filter-clear").style.display = spanFilter ? "" : "none";
-                            // Build sorted list of matching spans across all workers
-                            filteredSpans = [];
-                            if (spanFilter) {
-                                for (const [w, spans] of Object.entries(spansByWorker)) {
-                                    for (const s of spans) {
-                                        if (spanMatchesFilter(s)) filteredSpans.push({ ...s, workerId: Number(w) });
-                                    }
-                                }
-                                filteredSpans.sort((a, b) => a.start - b.start);
-                            }
-                            filteredSpanIndex = -1;
-                            const countEl = document.getElementById("span-filter-count");
-                            const prevBtn = document.getElementById("btn-span-prev");
-                            const nextBtn = document.getElementById("btn-span-next");
-                            countEl.textContent = spanFilter ? `${filteredSpans.length} matches` : "";
-                            prevBtn.disabled = filteredSpans.length === 0;
-                            nextBtn.disabled = filteredSpans.length === 0;
+                            buildFilteredSpans();
                             renderAll();
                         });
 
@@ -1239,16 +1225,45 @@
                             input.dispatchEvent(new Event("input"));
                         });
 
+                        function buildFilteredSpans() {
+                            filteredSpans = [];
+                            for (const [w, spans] of Object.entries(spansByWorker)) {
+                                for (const s of spans) {
+                                    if (spanMatchesFilter(s)) filteredSpans.push({ ...s, workerId: Number(w) });
+                                }
+                            }
+                            filteredSpans.sort((a, b) => a.start - b.start);
+                            filteredSpanIndex = -1;
+                            const countEl = document.getElementById("span-filter-count");
+                            const prevBtn = document.getElementById("btn-span-prev");
+                            const nextBtn = document.getElementById("btn-span-next");
+                            countEl.textContent = filteredSpans.length > 0 ? `${filteredSpans.length} matches` : "";
+                            prevBtn.disabled = filteredSpans.length === 0;
+                            nextBtn.disabled = filteredSpans.length === 0;
+                        }
+
                         function jumpToFilteredSpan(index) {
                             if (filteredSpans.length === 0) return;
                             filteredSpanIndex = ((index % filteredSpans.length) + filteredSpans.length) % filteredSpans.length;
                             const s = filteredSpans[filteredSpanIndex];
                             const spanDur = s.end - s.start;
-                            const viewDur = Math.max(spanDur * 10, 1e6); // 10x span duration, min 1ms
+                            const viewDur = Math.max(spanDur * 10, 1e6);
                             viewStart = Math.max(minTs, s.start - viewDur * 0.3);
                             viewEnd = Math.min(maxTs, viewStart + viewDur);
                             const laneIdx = workerIds.indexOf(s.workerId);
                             if (laneIdx >= 0) lanesContainer.scrollTop = laneIdx * LANE_H;
+                            // Highlight the navigated span
+                            selectedSpanId = s.spanId;
+                            selectedSpanIds = new Set([s.spanId]);
+                            if (s.parentSpanId != null) {
+                                let pid = s.parentSpanId;
+                                while (pid != null && !selectedSpanIds.has(pid)) {
+                                    selectedSpanIds.add(pid);
+                                    const parent = spanMeta.get(pid);
+                                    pid = parent?.parentSpanId ?? null;
+                                }
+                            }
+                            selectedTaskId = null;
                             document.getElementById("span-filter-count").textContent =
                                 `${filteredSpanIndex + 1}/${filteredSpans.length}`;
                             renderAll();
