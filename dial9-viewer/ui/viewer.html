@@ -855,6 +855,7 @@
             let filteredSpans = []; // all spans matching current filter, sorted by time
             let filteredSpanIndex = -1;
             let selectedSpanNames = new Set(); // clicked span name chips
+            let unmatchedSpans = [];
             // Lane canvases per worker (populated by buildLanes)
             let laneCanvases = {};
 
@@ -1169,8 +1170,9 @@
                     _spanDurCache = null;
                     spanMeta = spanResult2.spanMeta;
                     spanMaxDepth = spanResult2.maxDepth;
+                    unmatchedSpans = spanResult2.unmatchedSpans || [];
                     const totalSpans = Object.values(spansByWorker).reduce((s, a) => s + a.length, 0);
-                    console.log(`Span events: ${totalSpans} intervals across ${Object.keys(spansByWorker).length} workers, ${spanMeta.size} unique spans, maxDepth=${spanMaxDepth}`);
+                    console.log(`Span events: ${totalSpans} intervals across ${Object.keys(spansByWorker).length} workers, ${spanMeta.size} unique spans, maxDepth=${spanMaxDepth}, ${unmatchedSpans.length} unmatched`);
                 }
             }
 
@@ -1243,6 +1245,13 @@
                             }
                         }
                         rebuildChips();
+                        if (unmatchedSpans.length > 0) {
+                            const el = document.createElement("span");
+                            el.style.cssText = "margin-left:8px;color:#c66;font-size:0.9em";
+                            el.textContent = `⚠ ${unmatchedSpans.length} unmatched`;
+                            el.title = "Spans with enter but no exit (trace ended mid-span or segment rotated)";
+                            document.getElementById("span-legend-items").after(el);
+                        }
                         document.getElementById("btn-span-clear-names").addEventListener("click", () => {
                             selectedSpanNames.clear();
                             rebuildChips();

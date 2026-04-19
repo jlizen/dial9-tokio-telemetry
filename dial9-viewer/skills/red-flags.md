@@ -156,7 +156,7 @@ async function redFlagScan(tracePath) {
           if (wSpans[i].start >= p.start && wSpans[i].end <= p.end) count++;
         }
         if (count > 20) {
-          findings.push({ severity: 'warn', check: 'many-spans-per-poll', msg: `Worker ${w}: poll with ${count} spans (${((p.end - p.start) / 1e6).toFixed(2)}ms)` });
+          findings.push({ severity: 'warning', check: 'many-spans-per-poll', message: `Worker ${w}: poll with ${count} spans (${((p.end - p.start) / 1e6).toFixed(2)}ms)` });
         }
       }
     }
@@ -172,16 +172,17 @@ async function redFlagScan(tracePath) {
       const threshold = p50 * 10;
       const outliers = durations.filter(d => d > threshold).length;
       if (outliers > 0) {
-        findings.push({ severity: 'info', check: 'span-duration-outlier', msg: `${name}: ${outliers} spans >10x P50 (P50=${(p50 / 1e3).toFixed(1)}µs, threshold=${(threshold / 1e3).toFixed(1)}µs)` });
+        findings.push({ severity: 'info', check: 'span-duration-outlier', message: `${name}: ${outliers} spans >10x P50 (P50=${(p50 / 1e3).toFixed(1)}µs, threshold=${(threshold / 1e3).toFixed(1)}µs)` });
       }
     }
 
     // 11. Unmatched span enters (cancelled tasks or segment boundary)
-    const enters = trace.customEvents.filter(e => e.name.startsWith('SpanEnter:') || e.name === 'SpanEnterEvent').length;
-    const exits = trace.customEvents.filter(e => e.name.startsWith('SpanExit:') || e.name === 'SpanExitEvent').length;
-    const unmatched = Math.abs(enters - exits);
-    if (unmatched > 0) {
-      findings.push({ severity: 'info', check: 'unmatched-span-enters', msg: `${unmatched} unmatched span enter/exit events (possible task cancellation or segment boundary)` });
+    if (spanResult.unmatchedSpans && spanResult.unmatchedSpans.length > 0) {
+      const unmatched = spanResult.unmatchedSpans;
+      const byName = {};
+      for (const s of unmatched) (byName[s.spanName] ??= []).push(s);
+      const summary = Object.entries(byName).map(([n, arr]) => `${n}(${arr.length})`).join(', ');
+      findings.push({ severity: 'info', check: 'unmatched-spans', message: `${unmatched.length} spans with enter but no exit: ${summary}` });
     }
   }
 
@@ -239,5 +240,5 @@ When span events are present (`trace.customEvents`), check for polls containing 
 ### span-duration-outlier
 A span whose duration exceeds 10x the P50 for its name. Flags individual slow operations that may indicate contention, cold caches, or upstream latency spikes.
 
-### unmatched-span-enters
-More span enters than exits (or vice versa). A small mismatch is normal at segment boundaries. A large mismatch may indicate task cancellation or a bug in span instrumentation.
+### unmatched-spans
+Spans with an enter event but no matching exit. A small count is normal at trace segment boundaries (the span was open when the segment rotated). A large count may indicate task cancellation (the task was dropped before the span exited) or a bug in span instrumentation. The finding lists which span names are affected.

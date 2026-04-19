@@ -563,6 +563,21 @@
       spans.sort((a, b) => a.start - b.start);
     }
 
+    // Collect unmatched spans (enter without exit, e.g. trace ended mid-span)
+    const unmatchedSpans = [];
+    for (const [key, enter] of openSpans) {
+      const [spanId, workerId] = key.split(":").map(Number);
+      unmatchedSpans.push({
+        start: enter.timestamp,
+        spanId,
+        workerId,
+        spanName: enter.spanName,
+        fields: enter.fields,
+        parentSpanId: enter.parentSpanId,
+      });
+    }
+    unmatchedSpans.sort((a, b) => a.start - b.start);
+
     // Compute depth for each span by walking the parent chain
     const depthCache = new Map(); // spanId → depth
     function getDepth(spanId, seen) {
@@ -585,7 +600,7 @@
       }
     }
 
-    return { spansByWorker, spanMeta, maxDepth };
+    return { spansByWorker, spanMeta, maxDepth, unmatchedSpans };
   }
 
   // Export for both browser and Node.js

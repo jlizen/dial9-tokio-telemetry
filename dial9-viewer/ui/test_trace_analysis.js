@@ -488,6 +488,35 @@ async function main() {
     pass("Per-callsite schema with typed fields parsed correctly");
   }
 
+  function testBuildSpanDataUnmatched() {
+    const customEvents = [
+      { name: "SpanEnter:app::a:f:1", timestamp: 1000, fields: { worker_id: 0, span_id: 1, parent_span_id: null, span_name: "a" } },
+      { name: "SpanExit:app::a:f:1",  timestamp: 1100, fields: { worker_id: 0, span_id: 1, span_name: "a" } },
+      { name: "SpanEnter:app::b:f:2", timestamp: 1200, fields: { worker_id: 0, span_id: 2, parent_span_id: null, span_name: "b" } },
+    ];
+    const { spansByWorker, unmatchedSpans } = buildSpanData(customEvents);
+    if ((spansByWorker[0] || []).length !== 1) fail(`Expected 1 matched span`);
+    if (!unmatchedSpans || unmatchedSpans.length !== 1) fail(`Expected 1 unmatched span, got ${unmatchedSpans?.length}`);
+    if (unmatchedSpans[0].spanName !== "b") fail(`Expected unmatched span 'b'`);
+    pass("Unmatched spans (enter without exit) detected correctly");
+  }
+
+  function testBuildSpanDataUnmatched() {
+    const customEvents = [
+      { name: "SpanEnter:app::a:f:1", timestamp: 1000, fields: { worker_id: 0, span_id: 1, parent_span_id: null, span_name: "a" } },
+      { name: "SpanExit:app::a:f:1",  timestamp: 1100, fields: { worker_id: 0, span_id: 1, span_name: "a" } },
+      // This enter has no matching exit (trace ended mid-span)
+      { name: "SpanEnter:app::b:f:2", timestamp: 1200, fields: { worker_id: 0, span_id: 2, parent_span_id: null, span_name: "b" } },
+    ];
+    const { spansByWorker, unmatchedSpans } = buildSpanData(customEvents);
+    const matched = spansByWorker[0] || [];
+    if (matched.length !== 1) fail(`Expected 1 matched span, got ${matched.length}`);
+    if (!unmatchedSpans || unmatchedSpans.length !== 1) fail(`Expected 1 unmatched span, got ${unmatchedSpans?.length}`);
+    if (unmatchedSpans[0].spanName !== "b") fail(`Expected unmatched span 'b', got '${unmatchedSpans[0].spanName}'`);
+    if (unmatchedSpans[0].spanId !== 2) fail(`Expected unmatched spanId 2, got ${unmatchedSpans[0].spanId}`);
+    pass("Unmatched spans (enter without exit) detected correctly");
+  }
+
   // ── Regression: open PollStart at trace end must not create phantom poll (#194) ──
 
   function testOpenPollStartDiscarded() {
@@ -559,6 +588,7 @@ async function main() {
   testBuildSpanDataCycleDetection();
   testBuildSpanDataRecycledId();
   testBuildSpanDataPerCallsiteSchema();
+  testBuildSpanDataUnmatched();
 
   console.log("\n✓ All analysis checks passed!");
 }
