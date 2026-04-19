@@ -2,7 +2,8 @@ mod event_writer;
 mod runtime_context;
 mod shared_state;
 
-pub(crate) use runtime_context::{RuntimeContext, current_worker_id};
+pub(crate) use runtime_context::RuntimeContext;
+pub use runtime_context::current_worker_id;
 pub(crate) use shared_state::SharedState;
 
 use event_writer::EventWriter;
@@ -277,6 +278,16 @@ fn attach_runtime(
 
     let runtime = builder.build()?;
 
+    // Install the handle on the calling thread. For current_thread runtimes,
+    // this thread IS the worker (block_on runs here), so the tracing layer
+    // needs CURRENT_HANDLE to be set. Harmless for multi_thread runtimes.
+    CURRENT_HANDLE.with(|cell| {
+        *cell.borrow_mut() = Some(TelemetryHandle {
+            shared: shared.clone(),
+            control_tx: control_tx.clone(),
+        });
+    });
+
     // Pre-reserve a contiguous block of worker IDs and set metrics atomically.
     let metrics = runtime.handle().metrics();
     let num_workers = metrics.num_workers() as u64;
@@ -360,6 +371,19 @@ impl TelemetryHandle {
     /// Record a user-defined [`Encodable`](crate::telemetry::buffer::Encodable) event.
     pub(crate) fn record_encodable_event(&self, event: &dyn crate::telemetry::buffer::Encodable) {
         self.shared.record_encodable_event(event);
+    }
+
+    /// Run a closure with direct access to the thread-local encoder.
+    ///
+    /// Use this for dynamic schema encoding where you need to intern strings
+    /// and write events without an intermediate [`Encodable`] struct.
+    // TODO(GH-XXX): consider making this public as an alternative to record_event
+    // for zero-copy dynamic schema encoding
+    pub(crate) fn with_encoder(
+        &self,
+        f: impl FnOnce(&mut crate::telemetry::buffer::ThreadLocalEncoder<'_>),
+    ) {
+        self.shared.with_encoder(f);
     }
 
     /// Spawn a future wrapped with wake-event tracking.
