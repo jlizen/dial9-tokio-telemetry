@@ -1,3 +1,8 @@
+// NOTE: `span_events_appear_in_trace` uses `set_global_default` because it
+// spawns tasks across worker threads and needs the subscriber visible globally.
+// Only one test per process can do this. All other tests must use `set_default`
+// (thread-local) instead.
+
 use dial9_tokio_telemetry::telemetry::{RotatingWriter, TracedRuntime};
 use dial9_tokio_telemetry::tracing_layer::Dial9TokioLayer;
 use dial9_trace_format::types::FieldValueRef;
