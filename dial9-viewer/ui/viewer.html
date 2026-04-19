@@ -490,13 +490,6 @@
                 <button id="btn-tz-mode" title="Toggle between UTC and local timezone for absolute timestamps" style="display:none">TZ: UTC</button>
                 <button id="btn-reset">New File</button>
             </div>
-            <div id="span-legend" style="display:none;padding:2px 12px;background:#1a1a2e;border-bottom:1px solid #333;font-size:0.78em;color:#aaa">
-                <input id="span-filter" type="text" placeholder="Filter spans (name, key, or value)" style="background:#0f1629;border:1px solid #444;color:#ccc;padding:2px 6px;border-radius:3px;font-size:1em;width:220px;margin-right:4px">
-                <button id="btn-span-prev" style="font-size:0.9em" disabled>◀</button>
-                <button id="btn-span-next" style="font-size:0.9em" disabled>▶</button>
-                <span id="span-filter-count" style="margin:0 8px;color:#666"></span>
-                <span id="span-legend-items"></span>
-            </div>
             <div id="main-area" tabindex="0" role="application" aria-label="Trace timeline">
                 <div id="selection-overlay"></div>
                 <canvas id="crosshair-overlay" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:10"></canvas>
@@ -505,6 +498,14 @@
                     <div id="toast-container" style="position:absolute;top:0;bottom:0;left:0;display:flex;align-items:center;gap:8px;z-index:60;pointer-events:none"></div>
                 </div>
                 <div id="lanes-container" id="lanes"></div>
+                <div id="span-legend" style="display:none;padding:4px 12px;background:#1a1a2e;border-top:1px solid #333;font-size:0.78em;color:#aaa;display:none">
+                    <input id="span-filter" type="text" placeholder="Filter spans" style="background:#0f1629;border:1px solid #444;color:#ccc;padding:2px 6px;border-radius:3px;font-size:1em;width:160px;margin-right:4px">
+                    <button id="btn-span-prev" style="font-size:0.9em" disabled>◀</button>
+                    <button id="btn-span-next" style="font-size:0.9em" disabled>▶</button>
+                    <span id="span-filter-count" style="margin:0 4px;color:#666"></span>
+                    <button id="btn-span-clear-names" style="font-size:0.8em;display:none">✕ Clear</button>
+                    <span id="span-legend-items"></span>
+                </div>
                 <div id="span-panel">
                     <span class="chart-label" id="span-panel-label">Spans</span>
                     <span id="span-panel-info" style="position:absolute;top:4px;right:12px;font-size:0.75em;color:#aaa;z-index:2;pointer-events:none"></span>
@@ -678,6 +679,7 @@
             }
 
             function spanMatchesFilter(span) {
+                if (selectedSpanNames.size > 0 && !selectedSpanNames.has(span.spanName)) return false;
                 if (!spanFilter) return true;
                 const f = spanFilter.toLowerCase();
                 if (span.spanName.toLowerCase().includes(f)) return true;
@@ -812,6 +814,7 @@
             let spanFilter = ""; // free-text filter for span rendering
             let filteredSpans = []; // all spans matching current filter, sorted by time
             let filteredSpanIndex = -1;
+            let selectedSpanNames = new Set(); // clicked span name chips
             // Lane canvases per worker (populated by buildLanes)
             let laneCanvases = {};
 
@@ -1175,10 +1178,34 @@
                         for (const s of spans) allNames.add(s.spanName);
                     }
                     if (allNames.size > 0) {
-                        const items = [...allNames].sort().map(name =>
-                            `<span style="display:inline-block;width:10px;height:10px;background:${spanColor(name)};border-radius:2px;margin-right:3px;vertical-align:middle"></span>${esc(name)}`
-                        ).join("&nbsp;&nbsp;");
-                        document.getElementById("span-legend-items").innerHTML = `<span style="color:#666">Spans:</span> ${items}`;
+                        function rebuildChips() {
+                            const items = [...allNames].sort().map(name => {
+                                const active = selectedSpanNames.has(name);
+                                const bg = active ? spanColor(name) : "transparent";
+                                const border = `1px solid ${spanColor(name)}`;
+                                const color = active ? "#fff" : "#aaa";
+                                return `<span class="span-chip" data-name="${esc(name)}" style="display:inline-block;padding:1px 6px;margin:0 2px;border-radius:3px;cursor:pointer;background:${bg};border:${border};color:${color};font-size:0.95em">${esc(name)}</span>`;
+                            }).join("");
+                            const clearBtn = document.getElementById("btn-span-clear-names");
+                            clearBtn.style.display = selectedSpanNames.size > 0 ? "" : "none";
+                            document.getElementById("span-legend-items").innerHTML = items;
+                            // Attach click handlers to chips
+                            for (const chip of document.querySelectorAll(".span-chip")) {
+                                chip.addEventListener("click", () => {
+                                    const name = chip.dataset.name;
+                                    if (selectedSpanNames.has(name)) selectedSpanNames.delete(name);
+                                    else selectedSpanNames.add(name);
+                                    rebuildChips();
+                                    renderAll();
+                                });
+                            }
+                        }
+                        rebuildChips();
+                        document.getElementById("btn-span-clear-names").addEventListener("click", () => {
+                            selectedSpanNames.clear();
+                            rebuildChips();
+                            renderAll();
+                        });
                         legend.style.display = "block";
                         spanPanel.style.display = "block";
                         document.getElementById("span-filter").addEventListener("input", (e) => {
@@ -1836,24 +1863,11 @@
                 const nameSet = [...new Set(allSpans.map(s => s.spanName))].sort();
                 const maxRows = 5;
                 const visibleNames = nameSet.slice(0, maxRows);
-                const rowH = Math.min(20, Math.floor((ph - 20) / Math.max(visibleNames.length, 1)));
+                const rowH = Math.min(20, Math.floor((ph - 10) / Math.max(visibleNames.length, 1)));
                 const nameToRow = {};
                 visibleNames.forEach((n, i) => { nameToRow[n] = i; });
 
-                // Draw row labels
-                ctx.font = "10px monospace";
-                for (const [name, row] of Object.entries(nameToRow)) {
-                    const y = 14 + row * rowH;
-                    ctx.fillStyle = "#666";
-                    ctx.fillText(name, 4, y + rowH / 2 + 3);
-                }
-                if (nameSet.length > maxRows) {
-                    ctx.fillStyle = "#555";
-                    ctx.fillText(`+${nameSet.length - maxRows} more`, 4, 14 + maxRows * rowH + 10);
-                }
-
-                const labelOffset = 140; // space for labels
-                const barW = pw - labelOffset;
+                const barW = pw;
                 if (barW <= 0) return;
 
                 // Draw span bars
@@ -1862,10 +1876,10 @@
                 for (let i = 0; i < allSpans.length; i += step) {
                     const s = allSpans[i];
                     const row = nameToRow[s.spanName];
-                    if (row == null) continue; // collapsed
-                    const y = 14 + row * rowH;
-                    const x1 = labelOffset + Math.max(0, ((s.start - viewStart) / (viewEnd - viewStart)) * barW);
-                    const x2 = labelOffset + Math.min(barW, ((s.end - viewStart) / (viewEnd - viewStart)) * barW);
+                    if (row == null) continue;
+                    const y = 4 + row * rowH;
+                    const x1 = Math.max(0, ((s.start - viewStart) / (viewEnd - viewStart)) * barW);
+                    const x2 = Math.min(barW, ((s.end - viewStart) / (viewEnd - viewStart)) * barW);
                     const isSelected = selectedSpanIds.has(s.spanId);
                     ctx.fillStyle = spanColor(s.spanName);
                     ctx.globalAlpha = isSelected ? 1.0 : (selectedSpanIds.size > 0 ? 0.3 : 0.5);
@@ -1888,11 +1902,10 @@
                 const c = document.getElementById("span-panel-canvas");
                 const rect = c.getBoundingClientRect();
                 const mx = e.clientX - rect.left;
-                const labelOffset = 140;
-                const barW = rect.width - labelOffset;
-                if (mx < labelOffset || barW <= 0) { tooltip.style.display = "none"; return; }
+                const barW = rect.width;
+                if (barW <= 0) { tooltip.style.display = "none"; return; }
 
-                const ns = viewStart + ((mx - labelOffset) / barW) * (viewEnd - viewStart);
+                const ns = viewStart + (mx / barW) * (viewEnd - viewStart);
                 let hit = null;
                 let bestDist = Infinity;
                 for (const [w, wSpans] of Object.entries(spansByWorker)) {
@@ -1953,11 +1966,10 @@
                 const c = document.getElementById("span-panel-canvas");
                 const rect = c.getBoundingClientRect();
                 const mx = e.clientX - rect.left;
-                const labelOffset = 140;
-                const barW = rect.width - labelOffset;
-                if (mx < labelOffset || barW <= 0) return;
+                const barW = rect.width;
+                if (barW <= 0) return;
 
-                const ns = viewStart + ((mx - labelOffset) / barW) * (viewEnd - viewStart);
+                const ns = viewStart + (mx / barW) * (viewEnd - viewStart);
 
                 // Find the clicked span using nearest-span search
                 let hit = null;
