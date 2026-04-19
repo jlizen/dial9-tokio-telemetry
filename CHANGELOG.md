@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1](https://github.com/dial9-rs/dial9-tokio-telemetry/compare/dial9-tokio-telemetry-v0.3.0...dial9-tokio-telemetry-v0.3.1) - 2026-04-19
+
+### Added
+
+- **Tracing layer** ([#252](https://github.com/dial9-rs/dial9-tokio-telemetry/pull/252)): `Dial9TokioLayer` records `tracing` span enter/exit events, including field values, into the trace, showing what happened inside each poll. Enable with the `tracing-layer` feature flag.
+
+The viewer (`dial9-viewer serve`) shows spans in a dedicated panel with filtering, percentile ranking, and click-to-highlight. The agent analysis toolkit (`dial9-viewer agents`) includes span correlation recipes and automated span checks in the red-flags scan.
+
+```rust,ignore
+use dial9_tokio_telemetry::tracing_layer::Dial9TokioLayer;
+use tracing_subscriber::prelude::*;
+
+tracing_subscriber::registry()
+    .with(Dial9TokioLayer::new().with_filter(
+        tracing_subscriber::filter::Targets::new()
+            .with_target("my_app", tracing::Level::TRACE)
+            .with_default(tracing::Level::ERROR),
+    ))
+    .init();
+```
+
+Tracing support means you can attach a request ID or other context to spans via `#[instrument(fields(request_id = %id))]` and then search for specific requests in the trace. You can also see what's happening inside long polls: if a single poll contains many small operations without yielding, the span breakdown shows exactly where the time went. 
+
+Standard `tracing-subscriber` filtering rules apply. Without a filter, libraries like the AWS SDK will flood the trace with internal spans. The preceding captures only spans from `my_app`.
+
 ## [0.3.0](https://github.com/dial9-rs/dial9-tokio-telemetry/compare/dial9-tokio-telemetry-v0.2.0...dial9-tokio-telemetry-v0.3.0) - 2026-04-17
 
 Big release. The setup story is much better, there's support for tracing multiple runtimes, you can emit your own events into the trace, and the viewer is its own crate now. 
