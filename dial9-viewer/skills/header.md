@@ -87,7 +87,8 @@ This copies `decode.js`, `trace_parser.js`, `trace_analysis.js`, and `analyze.js
 const fs = require('fs');
 const { parseTrace, EVENT_TYPES } = require('./trace_parser.js');
 const { buildWorkerSpans, attachCpuSamples, buildActiveTaskTimeline,
-        computeSchedulingDelays, filterPointsOfInterest, buildFgData } = require('./trace_analysis.js');
+        computeSchedulingDelays, filterPointsOfInterest, buildFgData,
+        buildSpanData } = require('./trace_analysis.js');
 
 const buf = fs.readFileSync('trace.bin');
 const trace = await parseTrace(buf);
@@ -106,6 +107,13 @@ const spans = buildWorkerSpans(trace.events, workerIds, maxTs);
 attachCpuSamples(trace.cpuSamples, spans.workerSpans);
 const taskTimeline = buildActiveTaskTimeline(trace.taskSpawnTimes, trace.taskTerminateTimes);
 const schedDelays = computeSchedulingDelays(spans.workerSpans, workerIds, spans.wakesByTask);
+
+// Span events (from #[instrument] and tracing spans)
+// These are separate from poll/park events and require buildSpanData()
+const spanData = buildSpanData(trace.customEvents);
+// spanData.spansByWorker[workerId] = [{start, end, spanId, spanName, fields, parentSpanId, depth}, ...]
+// spanData.spanMeta = Map<spanId, {spanName, fields, parentSpanId}>
+// spanData.unmatchedSpans = spans with enter but no exit (trace ended mid-span)
 ```
 
 ## Fetching traces from S3
