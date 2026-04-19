@@ -49,7 +49,12 @@ fn bench_tracing_only(c: &mut Criterion) {
     group.bench_function("with_fields", |b| {
         b.iter(|| {
             runtime.block_on(async {
-                let span = tracing::info_span!("fielded", user_id = 42, method = "GET", path = "/api/v1/users");
+                let span = tracing::info_span!(
+                    "fielded",
+                    user_id = 42,
+                    method = "GET",
+                    path = "/api/v1/users"
+                );
                 let _enter = span.enter();
             });
         });
@@ -87,7 +92,12 @@ fn bench_with_dial9(c: &mut Criterion) {
     group.bench_function("with_fields", |b| {
         b.iter(|| {
             runtime.block_on(async {
-                let span = tracing::info_span!("fielded", user_id = 42, method = "GET", path = "/api/v1/users");
+                let span = tracing::info_span!(
+                    "fielded",
+                    user_id = 42,
+                    method = "GET",
+                    path = "/api/v1/users"
+                );
                 let _enter = span.enter();
             });
         });

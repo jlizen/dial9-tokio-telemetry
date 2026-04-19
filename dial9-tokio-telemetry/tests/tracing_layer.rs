@@ -283,3 +283,51 @@ fn no_telemetry_handle_does_not_panic() {
     let _enter = span.enter();
     // If we get here without panicking, the test passes.
 }
+
+/// Verify that span events are emitted on current_thread runtimes.
+/// Regression test: the calling thread (which IS the worker for current_thread)
+/// must have CURRENT_HANDLE installed, otherwise all span events are silently dropped.
+#[test]
+fn span_events_on_current_thread_runtime() {
+    let dir = tempfile::tempdir().unwrap();
+    let trace_path = dir.path().join("trace.bin");
+
+    let mut builder = tokio::runtime::Builder::new_current_thread();
+    builder.enable_all();
+
+    let writer = RotatingWriter::single_file(&trace_path).unwrap();
+    let (runtime, guard) = TracedRuntime::build_and_start(builder, writer).unwrap();
+
+    let subscriber = tracing_subscriber::registry().with(Dial9TokioLayer::new());
+    let _sub_guard = tracing::subscriber::set_default(subscriber);
+
+    runtime.block_on(async {
+        #[tracing::instrument]
+        async fn do_work() {
+            tokio::task::yield_now().await;
+        }
+
+        do_work().await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    });
+
+    drop(runtime);
+    drop(guard);
+
+    let sealed_path = dir.path().join("trace.0.bin");
+    let events = decode_span_events(&sealed_path);
+
+    assert!(
+        events.enter_count >= 1,
+        "expected at least 1 span enter on current_thread runtime, got {}",
+        events.enter_count
+    );
+    assert_eq!(
+        events.enter_count, events.exit_count,
+        "enter/exit count mismatch on current_thread runtime"
+    );
+    assert!(
+        events.enter_names.contains(&"do_work".to_string()),
+        "missing do_work span on current_thread runtime"
+    );
+}
