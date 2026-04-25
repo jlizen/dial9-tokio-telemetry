@@ -210,7 +210,7 @@ async function main() {
     const dir = setupDir(3);
     try {
       const progress = [];
-      await collect(dir, { onProgress: p => progress.push(p) });
+      await collect(dir, { onParseProgress: p => progress.push(p) });
       assert(progress.length >= 3, `progress: >= 3 calls (got ${progress.length})`);
     } finally {
       cleanup(dir);

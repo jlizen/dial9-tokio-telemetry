@@ -124,7 +124,7 @@
    * @param {number} [options.maxEvents] - Maximum number of events to parse (default: Infinity)
    * @param {number} [options.startTime] - Start of time range filter (absolute ns, inclusive)
    * @param {number} [options.endTime] - End of time range filter (absolute ns, inclusive)
-   * @param {function} [options.onProgress] - Called with {done, total, file} as files complete
+   * @param {function} [options.onParseProgress] - Called with {done, total, file} as files complete
    * @param {boolean} [options.cache] - Enable disk caching for directories (default: true)
    * @param {boolean} [options.parallel] - Enable parallel parsing for directories (default: true)
    * @param {boolean} [options.force] - Ignore cached results and re-parse (default: false)
@@ -172,7 +172,7 @@
     const maxEvents = (options && options.maxEvents != null) ? options.maxEvents : MAX_EVENTS;
     const startTime = (options && options.startTime != null) ? options.startTime : 0;
     const endTime = (options && options.endTime != null) ? options.endTime : Infinity;
-    const onProgress = (options && options.onProgress) || null;
+    const onProgress = (options && options.onParseProgress) || null;
     const YIELD_BYTES = 100 * 1024; // yield to browser every 100KB
     const TD = getTraceDecoder();
     const dec = new TD(
@@ -555,7 +555,7 @@
     const useCache = opts.cache !== false;
     const force = opts.force === true;
     const sampleN = opts.sample != null ? opts.sample : null;
-    const onProgress = opts.onProgress || null;
+    const onProgress = opts.onParseProgress || null;
 
     const TRACE_EXT = /\.(bin|bin\.gz)$/;
     let files = fs.readdirSync(dirPath)

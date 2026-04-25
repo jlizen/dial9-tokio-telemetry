@@ -476,7 +476,7 @@ function reportAnalysis(a, label) {
  * with aggregated stats, histograms, and top-N results.
  * For directories, parsing and analysis run in parallel subprocesses.
  * @param {string} tracePath - file or directory path
- * @param {Object} [opts] - { force, sample, onProgress }
+ * @param {Object} [opts] - { force, sample, onParseProgress }
  */
 async function analyzeTraces(tracePath, opts) {
   opts = opts || {};
@@ -492,7 +492,7 @@ async function analyzeTraces(tracePath, opts) {
 
   // Phase 1: parallel parse (populate cache)
   const parseOpts = { ...opts };
-  parseOpts.onProgress = opts.onProgress || null;
+  parseOpts.onParseProgress = opts.onParseProgress || null;
   const iter = parseTrace(tracePath, parseOpts);
   if (iter.allCached) await iter.allCached;
   else { for await (const _ of iter) {} }
@@ -555,7 +555,7 @@ async function main() {
   const result = await analyzeTraces(TRACE_PATH, {
     force: FORCE,
     sample: SAMPLE || undefined,
-    onProgress: isDir ? ({ done, total, cached }) => {
+    onParseProgress: isDir ? ({ done, total, cached }) => {
       if (done === 0) process.stderr.write(`Found ${total} trace file(s)\n`);
       else if (done === total || done % Math.max(1, Math.floor(total / 100)) === 0) {
         const cachedStr = cached > 0 ? ` (${cached} cached)` : '';

@@ -39,6 +39,17 @@ const result = await analyzeTraces('/path/to/traces/'); // options: { sample, fo
 // result.longPolls, result.workerSpans, result.schedDelayHist, result.cpuGroups, result.spanStats
 ```
 
+For progress on large directories, pass `onParseProgress` and `onAnalysisProgress` callbacks:
+
+```javascript
+const result = await analyzeTraces('/path/to/traces/', {
+  onParseProgress: ({ done, total, cached }) => process.stderr.write(`\rparsing: [${done}/${total}]${cached ? ` (${cached} cached)` : ''}`),
+  onParseComplete: () => process.stderr.write('\n'),
+  onAnalysisProgress: ({ done, total }) => process.stderr.write(`\ranalyzing: [${done}/${total}]`),
+});
+process.stderr.write('\n');
+```
+
 For per-trace raw data (flamegraphs, field filtering, wake chains):
 
 ```javascript
