@@ -558,13 +558,13 @@ async function main() {
     sample: SAMPLE || undefined,
     onProgress: isDir ? ({ done, total }) => {
       if (done === 0) process.stderr.write(`Found ${total} trace file(s)\n`);
-      else if (done === total || done % 10 === 0) process.stderr.write(`\r  parsing: [${done}/${total}]`);
+      else if (done === total || done % Math.max(1, Math.floor(total / 100)) === 0) process.stderr.write(`\r  parsing: [${done}/${total}]`);
     } : undefined,
     onParseComplete: isDir ? () => {
       process.stderr.write('\n');
     } : undefined,
     onAnalysisProgress: isDir ? ({ done, total }) => {
-      if (done === total || done % 10 === 0) process.stderr.write(`\r  analyzing: [${done}/${total}]`);
+      if (done === total || done % Math.max(1, Math.floor(total / 100)) === 0) process.stderr.write(`\r  analyzing: [${done}/${total}]`);
     } : undefined,
   });
   if (isDir) process.stderr.write('\n');
