@@ -501,9 +501,9 @@ async function analyzeTraces(tracePath, opts) {
   const parseOpts = { ...opts };
   parseOpts.onProgress = opts.onProgress || null;
   const iter = parseTrace(tracePath, parseOpts);
-  // Wait for all workers to finish without reading cache files
   if (iter.allCached) await iter.allCached;
-  else { for await (const _ of iter) { /* single file, just parse */ } }
+  else { for await (const _ of iter) {} }
+  if (opts.onParseComplete) opts.onParseComplete();
 
   // Phase 2: parallel analysis via accumulate workers
   const { execFile } = require('child_process');
@@ -559,6 +559,9 @@ async function main() {
     onProgress: isDir ? ({ done, total }) => {
       if (done === 0) console.log(`Found ${total} trace file(s)`);
       else process.stderr.write(`\r  parsing: [${done}/${total}]`);
+    } : undefined,
+    onParseComplete: isDir ? () => {
+      process.stderr.write('\n');
     } : undefined,
     onAnalysisProgress: isDir ? ({ done, total }) => {
       process.stderr.write(`\r  analyzing: [${done}/${total}]`);
