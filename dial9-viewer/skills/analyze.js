@@ -240,6 +240,7 @@ function finalizeAccumulator(acc) {
     workerSpans,
     longPolls: acc.longPolls,
     schedDelayStats: { total: acc.schedDelayTotal, highCount: acc.schedDelayHighCount, worst: acc.schedDelayWorst },
+    schedDelays: acc.schedDelayWorst,
     queueDepthStats: { max: acc.queueMax, avg: acc.queueCount > 0 ? acc.queueSum / acc.queueCount : 0, samples: acc.queueCount },
     taskTimeline: { activeTaskSamples: acc.taskTimelineSamples },
     taskSpawnLocs: acc.taskSpawnLocs, taskSpawnTimes: acc.taskSpawnTimes,
