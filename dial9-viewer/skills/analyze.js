@@ -20,14 +20,6 @@ const { parseTrace, EVENT_TYPES, formatFrame, symbolizeChain, deduplicateSamples
 const { buildWorkerSpans, attachCpuSamples, buildActiveTaskTimeline,
         computeSchedulingDelays, filterPointsOfInterest, buildSpanData } = require(resolve('trace_analysis.js'));
 
-const TRACE_PATH = process.argv[2];
-if (!TRACE_PATH) { console.error('Usage: node analyze.js <trace.bin or directory>'); process.exit(1); }
-
-// Parse CLI flags
-const FORCE = process.argv.includes('--force');
-const sampleIdx = process.argv.indexOf('--sample');
-const SAMPLE = sampleIdx !== -1 ? Number(process.argv[sampleIdx + 1]) : null;
-
 // ── Helpers ──
 
 function maxBy(arr, fn) { return arr.reduce((m, x) => Math.max(m, fn(x)), -Infinity); }
@@ -548,6 +540,12 @@ async function analyzeTraces(tracePath, opts) {
 }
 
 async function main() {
+  const TRACE_PATH = process.argv[2];
+  if (!TRACE_PATH) { console.error('Usage: node analyze.js <trace.bin or directory>'); process.exit(1); }
+  const FORCE = process.argv.includes('--force');
+  const sampleIdx = process.argv.indexOf('--sample');
+  const SAMPLE = sampleIdx !== -1 ? Number(process.argv[sampleIdx + 1]) : null;
+
   const isDir = fs.statSync(TRACE_PATH).isDirectory();
 
   if (isDir) process.stderr.write(`Analyzing directory: ${TRACE_PATH}\n`);

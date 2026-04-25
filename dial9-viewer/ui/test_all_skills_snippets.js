@@ -105,6 +105,7 @@ async function main() {
     }
 
     // Context: all variables available to code blocks
+    const { analyzeTraces } = require(path.resolve(__dirname, '..', 'skills', 'analyze.js'));
     const ctx = {
       trace, workerIds, minTs, maxTs, spans, schedDelays, taskTimeline,
       EVENT_TYPES, formatFrame, symbolizeChain, deduplicateSamples,
@@ -114,6 +115,7 @@ async function main() {
       event: trace.events[0],
       sample: trace.cpuSamples[0] || {},
       tracePath: input.path,
+      analyzeTraces,
     };
     const ctxNames = Object.keys(ctx);
     const ctxValues = Object.values(ctx);
