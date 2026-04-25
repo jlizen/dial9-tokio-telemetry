@@ -6,6 +6,8 @@
 
 ```
 {
+  magic: string,                   // "D9TF" format identifier
+  version: number,                 // trace format version
   events: TraceEvent[],          // PollStart, PollEnd, WorkerPark, WorkerUnpark, QueueSample, WakeEvent
   cpuSamples: CpuSample[],      // Periodic stack traces from perf/eBPF
   customEvents: CustomEvent[],   // SpanEnter/SpanExit events from tracing layer (requires dial9-tokio-telemetry tracing-layer feature)
@@ -20,6 +22,11 @@
   runtimeWorkers: Map<string, number[]>, // runtime name → worker IDs
   truncated: boolean,
   timeFiltered: boolean,
+  filterStartTime: number|null,          // start of time range filter (ns), null if unfiltered
+  filterEndTime: number|null,            // end of time range filter (ns), null if unfiltered
+  hasCpuTime: boolean,                   // trace includes CPU time data
+  hasSchedWait: boolean,                 // trace includes kernel scheduling wait data
+  hasTaskTracking: boolean,              // trace includes task spawn/terminate events
 }
 ```
 

@@ -160,73 +160,49 @@ async function main() {
 
   fs.rmSync(testDir, { recursive: true, force: true });
 
-  // ── Schema sync: analysis.md documents every analyzeTraces key and vice versa ──
-  const { analyzeTraces: at } = require(path.resolve(__dirname, '..', 'skills', 'analyze.js'));
-  const result = await at(demoPath);
-  const actualKeys = new Set(Object.keys(result));
-
-  const analysisMd = fs.readFileSync(path.join(skillsDir, "analysis.md"), "utf8");
-  const schemaMatch = analysisMd.match(/## analyzeTraces return schema[\s\S]*?```\n\{([\s\S]*?)\n\}[\s\S]*?```/);
-  if (!schemaMatch) {
-    console.log("✗ schema sync: could not find analyzeTraces return schema block in analysis.md");
-    failed++;
-  } else {
-    // Top-level keys are at exactly 2-space indent (not deeper)
-    const docKeys = new Set(schemaMatch[1].match(/^ {2}(\w+):/gm).map(m => m.trim().replace(/:$/, '')));
-    const undocumented = [...actualKeys].filter(k => !docKeys.has(k));
-    const stale = [...docKeys].filter(k => !actualKeys.has(k));
-    if (undocumented.length > 0 || stale.length > 0) {
-      if (undocumented.length) console.log(`✗ schema sync: keys in analyzeTraces but not in analysis.md: ${undocumented.join(', ')}`);
-      if (stale.length) console.log(`✗ schema sync: keys in analysis.md but not in analyzeTraces: ${stale.join(', ')}`);
-      failed++;
-    } else {
-      console.log(`✓ schema sync: analysis.md matches analyzeTraces (${docKeys.size} keys)`);
-      passed++;
-    }
-
-    // Deep validation: parse schema from markdown into a typed skeleton, diff against actual result
+  // ── Schema validation helpers ──
+  // Parses a pseudo-code schema block into a typed JS skeleton, then diffs against an actual object.
+  // Returns {topLevelErrors: string[], deepErrors: string[], docKeyCount: number}.
+  function validateSchema(schemaBlock, actualObj) {
+    const topLevelErrors = [];
     const deepErrors = [];
 
-    // Convert a schema type annotation string into a typed marker
-    function typeMarker(typeStr) {
-      const t = typeStr.trim().replace(/\|null$/, '');
-      if (t === 'number' || t === 'number[]' || t === 'string' || t === 'boolean') return t;
-      if (t === 'Histogram') return 'Histogram';
-      return '_unknown_';
-    }
+    // Top-level key check
+    const actualKeys = new Set(Object.keys(actualObj));
+    const topKeyMatches = schemaBlock.match(/^ {2}(\w+):/gm);
+    if (!topKeyMatches) { topLevelErrors.push('no top-level keys found in schema'); return { topLevelErrors, deepErrors, docKeyCount: 0 }; }
+    const docKeys = new Set(topKeyMatches.map(m => m.trim().replace(/:$/, '')));
+    for (const k of actualKeys) { if (!docKeys.has(k)) topLevelErrors.push(`'${k}' in result but not documented`); }
+    for (const k of docKeys) { if (!actualKeys.has(k)) topLevelErrors.push(`'${k}' documented but missing from result`); }
 
-    // Parse the schema pseudo-code into a JS object skeleton with typed leaf markers
-    let schemaJs = schemaMatch[1]
-      .replace(/\/\/.*$/gm, '')                            // strip comments
-      .replace(/\[\w+\]:/g, '_dynamic_:')                  // [workerId]: → _dynamic_:
-      // Map<K, V> → {"_map_": <skeleton of V>}
+    // Parse schema into typed skeleton
+    let schemaJs = schemaBlock
+      .replace(/\/\/.*$/gm, '')
+      .replace(/\[\w+\]:/g, '_dynamic_:')
       .replace(/:\s*Map<[^,]+,\s*([^>]+)>/g, (_, valType) => {
         const v = valType.trim();
-        // Object value shape: {a, b, c} or {a, b}|[{a, b}]
         const objMatch = v.match(/\{([^}]+)\}/);
         if (objMatch) {
           const keys = objMatch[1].split(',').map(k => k.trim()).filter(Boolean);
           return ': {"_map_":{' + keys.map(k => `"${k}":"_any_"`).join(',') + '}}';
         }
-        return ': {"_map_":"' + typeMarker(v) + '"}';
+        const t = v.replace(/\|null$/, '');
+        return ': {"_map_":"' + t + '"}';
       })
-      .replace(/:\s*(Histogram)(\|null)?/g, (_, __, nullable) => ': "Histogram' + (nullable ? '|null' : '') + '"')
+      .replace(/:\s*(Histogram)(\|null)?/g, (_, __, n) => ': "Histogram' + (n ? '|null' : '') + '"')
       .replace(/:\s*(number\[\])/g, ': "number[]"')
-      .replace(/:\s*(number)/g, ': "number"')
-      .replace(/:\s*(string)(\|null)?/g, (_, __, nullable) => ': "string' + (nullable ? '|null' : '') + '"')
+      .replace(/:\s*(number)(\|null)?/g, (_, __, n) => ': "number' + (n ? '|null' : '') + '"')
+      .replace(/:\s*(string)(\|null)?/g, (_, __, n) => ': "string' + (n ? '|null' : '') + '"')
       .replace(/:\s*(boolean)/g, ': "boolean"')
-      .replace(/\[\{([^}]+)\}\]/g, (_, inner) => {         // [{a, b, c}] → [{"a":"_any_","b":"_any_","c":"_any_"}]
+      .replace(/:\s*(\w+)\[\]/g, ': "unknown[]"')          // TraceEvent[], CpuSample[], etc.
+      .replace(/\[\{([^}]+)\}\]/g, (_, inner) => {
         const keys = inner.split(',').map(k => k.trim()).filter(Boolean);
         return '[{' + keys.map(k => `"${k}":"_any_"`).join(',') + '}]';
       });
     let docSkeleton;
-    try {
-      docSkeleton = (new Function('return {' + schemaJs + '}'))();
-    } catch (e) {
-      deepErrors.push(`schema parse failed: ${e.message}`);
-    }
+    try { docSkeleton = (new Function('return {' + schemaJs + '}'))(); }
+    catch (e) { deepErrors.push(`schema parse failed: ${e.message}`); }
 
-    // Extract a typed skeleton from the actual result
     function toSkeleton(val) {
       if (val === null || val === undefined) return '_null_';
       if (val instanceof Map) {
@@ -249,58 +225,73 @@ async function main() {
     }
 
     if (docSkeleton) {
-      const actualSkeleton = toSkeleton(result);
-
-      function diff(doc, actual, path) {
-        // Resolve dynamic keys (like [workerId])
+      const actualSkeleton = toSkeleton(actualObj);
+      function diff(doc, actual, p) {
         if (typeof doc === 'object' && doc !== null && !Array.isArray(doc) && '_dynamic_' in doc) {
-          if (typeof actual !== 'object' || actual === null) { deepErrors.push(`${path}: expected object with dynamic keys`); return; }
+          if (typeof actual !== 'object' || actual === null) { deepErrors.push(`${p}: expected object with dynamic keys`); return; }
           const firstVal = Object.values(actual)[0];
-          if (firstVal !== undefined) diff(doc._dynamic_, firstVal, path + '[*]');
+          if (firstVal !== undefined) diff(doc._dynamic_, firstVal, p + '[*]');
           return;
         }
-        // Both are typed leaf strings: compare types
         if (typeof doc === 'string' && typeof actual === 'string') {
-          // Allow nullable matches: "Histogram|null" matches "Histogram" or "_null_"
-          // Allow "_any_" to match anything
           if (doc === '_any_' || actual === doc) return;
+          if (actual === '_empty_') return; // empty Map/collection, can't validate value type
           if (doc.endsWith('|null') && (actual === doc.replace('|null', '') || actual === '_null_')) return;
-          if (doc === 'number[]' && actual === '[]') return; // empty array is fine
-          deepErrors.push(`${path}: type mismatch (documented: ${doc}, actual: ${actual})`);
+          if (doc === 'number[]' && actual === '[]') return;
+          deepErrors.push(`${p}: type mismatch (documented: ${doc}, actual: ${actual})`);
           return;
         }
-        // Doc says _any_: skip deeper checking (shorthand element in [{a, b, c}])
         if (doc === '_any_') return;
-        // Array: compare element shapes
+        // Opaque array types (TraceEvent[], CpuSample[], etc.) match any array
+        if (doc === 'unknown[]') return;
         if (Array.isArray(doc) && Array.isArray(actual)) {
-          if (doc.length > 0 && actual.length > 0) diff(doc[0], actual[0], path + '[0]');
+          if (doc.length > 0 && actual.length > 0) diff(doc[0], actual[0], p + '[0]');
           return;
         }
-        // Both objects: compare keys recursively
         if (typeof doc === 'object' && doc !== null && typeof actual === 'object' && actual !== null) {
-          const docKeys = new Set(Object.keys(doc));
-          const actKeys = new Set(Object.keys(actual));
-          for (const k of docKeys) { if (!actKeys.has(k)) deepErrors.push(`${path}.${k}: documented but missing from result`); }
-          for (const k of actKeys) { if (!docKeys.has(k)) deepErrors.push(`${path}.${k}: in result but not documented`); }
-          for (const k of docKeys) { if (actKeys.has(k)) diff(doc[k], actual[k], path + '.' + k); }
+          const dk = new Set(Object.keys(doc)), ak = new Set(Object.keys(actual));
+          for (const k of dk) { if (!ak.has(k)) deepErrors.push(`${p}.${k}: documented but missing from result`); }
+          for (const k of ak) { if (!dk.has(k)) deepErrors.push(`${p}.${k}: in result but not documented`); }
+          for (const k of dk) { if (ak.has(k)) diff(doc[k], actual[k], p + '.' + k); }
           return;
         }
-        // Mismatch between object/string/array
-        if (typeof doc !== typeof actual) {
-          deepErrors.push(`${path}: shape mismatch (documented: ${typeof doc}, actual: ${typeof actual})`);
-        }
+        if (typeof doc !== typeof actual) deepErrors.push(`${p}: shape mismatch (documented: ${typeof doc}, actual: ${typeof actual})`);
       }
       diff(docSkeleton, actualSkeleton, '');
     }
+    return { topLevelErrors, deepErrors, docKeyCount: docKeys.size };
+  }
 
-    if (deepErrors.length > 0) {
-      for (const e of deepErrors) console.log(`✗ schema deep: ${e}`);
+  function runSchemaCheck(label, mdFile, headingRegex, actualObj) {
+    const md = fs.readFileSync(path.join(skillsDir, mdFile), "utf8");
+    const match = md.match(headingRegex);
+    if (!match) { console.log(`✗ ${label}: could not find schema block in ${mdFile}`); failed++; return; }
+    const { topLevelErrors, deepErrors, docKeyCount } = validateSchema(match[1], actualObj);
+    if (topLevelErrors.length > 0) {
+      for (const e of topLevelErrors) console.log(`✗ ${label} sync: ${e}`);
       failed++;
     } else {
-      console.log(`✓ schema deep: nested object shapes match documentation`);
+      console.log(`✓ ${label} sync: ${mdFile} matches (${docKeyCount} keys)`);
+      passed++;
+    }
+    if (deepErrors.length > 0) {
+      for (const e of deepErrors) console.log(`✗ ${label} deep: ${e}`);
+      failed++;
+    } else {
+      console.log(`✓ ${label} deep: nested shapes and types match`);
       passed++;
     }
   }
+
+  // ── analyzeTraces schema (analysis.md) ──
+  const { analyzeTraces: at } = require(path.resolve(__dirname, '..', 'skills', 'analyze.js'));
+  const analyzeResult = await at(demoPath);
+  runSchemaCheck('analyzeTraces', 'analysis.md', /## analyzeTraces return schema[\s\S]*?```\n\{([\s\S]*?)\n\}[\s\S]*?```/, analyzeResult);
+
+  // ── ParsedTrace schema (loading.md) ──
+  let parsedTrace;
+  for await (const t of require("./trace_parser.js").parseTrace(demoPath)) { parsedTrace = t; break; }
+  runSchemaCheck('ParsedTrace', 'loading.md', /## ParsedTrace structure[\s\S]*?```\n\{([\s\S]*?)\n\}[\s\S]*?```/, parsedTrace);
 
   const unique = allRecipes.filter(r => !shouldSkip(r)).length;
   console.log(`\n${failed === 0 ? "✓" : "✗"} ${unique} snippets × ${inputs.length} modes: ${passed} passed, ${failed} failed, ${skipped} skipped`);
