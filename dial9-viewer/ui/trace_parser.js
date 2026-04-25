@@ -112,28 +112,26 @@
   /**
    * Parse dial9 trace data from a buffer, file path, or directory.
    *
-   * - Buffer/ArrayBuffer/Uint8Array: parses the binary trace data directly.
-   * - String (file path): reads the file and parses it (Node.js only).
-   * - String (directory path): parses all .bin/.bin.gz files in the directory
-   *   with automatic caching and parallelism. Returns an async iterable of
-   *   {file, trace} objects (Node.js only).
+   * - Buffer/ArrayBuffer/Uint8Array: returns Promise<ParsedTrace> (browser compatible).
+   * - String (file path): returns AsyncIterable yielding one ParsedTrace (Node.js only).
+   * - String (directory): returns AsyncIterable yielding one ParsedTrace per file,
+   *   with parallel parsing and caching (Node.js only).
    *
-   * File and directory paths are Node-only. In the browser, fetch trace data
-   * via the viewer API (e.g. /api/trace) and pass the ArrayBuffer directly.
+   * In the browser, fetch trace data via the viewer API and pass the ArrayBuffer.
    *
    * @param {ArrayBuffer|Uint8Array|string} input - Binary data, file path, or directory path
    * @param {Object} [options] - Optional parsing options
    * @param {number} [options.maxEvents] - Maximum number of events to parse (default: Infinity)
    * @param {number} [options.startTime] - Start of time range filter (absolute ns, inclusive)
    * @param {number} [options.endTime] - End of time range filter (absolute ns, inclusive)
-   * @param {function} [options.onProgress] - Called with {bytesRead, totalBytes, eventCount} periodically
+   * @param {function} [options.onProgress] - Called with {done, total, file} as files complete
    * @param {boolean} [options.cache] - Enable disk caching for directories (default: true)
-   * @param {boolean} [options.parallel] - Enable parallel parsing for directories (default: auto based on file count)
+   * @param {boolean} [options.parallel] - Enable parallel parsing for directories (default: true)
    * @param {boolean} [options.force] - Ignore cached results and re-parse (default: false)
    * @param {number} [options.sample] - Only parse N evenly-spaced files from a directory
-   * @returns {Promise<ParsedTrace>|AsyncIterable<{file: string, trace: ParsedTrace}>}
+   * @returns {AsyncIterable<ParsedTrace>}
    */
-  async function parseTrace(input, options) {
+  function parseTrace(input, options) {
     if (typeof input === 'string') {
       if (typeof require === 'undefined') {
         throw new Error(
@@ -147,9 +145,25 @@
       if (stat.isDirectory()) {
         return parseTraceDir(input, options);
       }
-      return parseTraceBuffer(fs.readFileSync(input), options);
+      // Single file path: async iterable yielding one trace
+      return wrapSingle(parseTraceBuffer(fs.readFileSync(input), options));
     }
+    // Buffer: return Promise<ParsedTrace> directly (backwards compatible with browser)
     return parseTraceBuffer(input, options);
+  }
+
+  /** Wrap a Promise<ParsedTrace> as an async iterable that yields once. */
+  function wrapSingle(promise) {
+    return {
+      [Symbol.asyncIterator]() {
+        let done = false;
+        return { async next() {
+          if (done) return { done: true, value: undefined };
+          done = true;
+          return { done: false, value: await promise };
+        }};
+      }
+    };
   }
 
   /** @private Parse a binary trace buffer. */
@@ -473,15 +487,15 @@
 
   // ── Directory parsing (Node-only) ──
 
-  /** Reconstruct Maps from [key, value] arrays produced by analyze_worker.js. */
+  /** Reconstruct Maps from [key, value] arrays produced by parse_worker.js. */
   function entriesToMap(arr) {
     return new Map(arr);
   }
 
-  /** Load cached analysis results from NDJSON, reconstructing Maps. */
-  function loadCachedAnalysis(cachePath) {
+  /** Load a cached ParsedTrace from NDJSON, reconstructing Maps. */
+  async function loadCachedTrace(cachePath) {
     const fs = require('fs');
-    const buf = fs.readFileSync(cachePath);
+    const buf = await fs.promises.readFile(cachePath);
     let pos = 0;
     function nextLine() {
       const nl = buf.indexOf(10, pos);
@@ -494,57 +508,35 @@
       return s;
     }
 
-    const result = {
-      workerSpans: {},
-      schedDelays: [],
-      cpuGroups: [],
-      schedGroups: [],
-    };
+    let raw = null;
+    const events = [];
+    const cpuSamples = [];
+    const customEvents = [];
 
     let line;
     while ((line = nextLine()) !== null) {
       if (!line) continue;
       const rec = JSON.parse(line);
       switch (rec.t) {
-        case 'm': {
-          const d = rec.d;
-          if (d.taskSpawnLocs) d.taskSpawnLocs = entriesToMap(d.taskSpawnLocs);
-          if (d.taskSpawnTimes) d.taskSpawnTimes = entriesToMap(d.taskSpawnTimes);
-          if (d.taskTerminateTimes) d.taskTerminateTimes = entriesToMap(d.taskTerminateTimes);
-          if (d.callframeSymbols) d.callframeSymbols = entriesToMap(d.callframeSymbols);
-          Object.assign(result, d);
+        case 'm':
+          raw = rec.d;
+          if (raw.spawnLocations) raw.spawnLocations = entriesToMap(raw.spawnLocations);
+          if (raw.taskSpawnLocs) raw.taskSpawnLocs = entriesToMap(raw.taskSpawnLocs);
+          if (raw.taskSpawnTimes) raw.taskSpawnTimes = entriesToMap(raw.taskSpawnTimes);
+          if (raw.taskTerminateTimes) raw.taskTerminateTimes = entriesToMap(raw.taskTerminateTimes);
+          if (raw.callframeSymbols) raw.callframeSymbols = entriesToMap(raw.callframeSymbols);
+          if (raw.threadNames) raw.threadNames = entriesToMap(raw.threadNames);
+          if (raw.runtimeWorkers) raw.runtimeWorkers = entriesToMap(raw.runtimeWorkers);
           break;
-        }
-        case 'w':
-          result.workerSpans[rec.k] = rec.d;
-          break;
-        case 'q':
-          result.queueSamples = rec.d;
-          break;
-        case 'wt':
-          result.wakesByTask = rec.d;
-          break;
-        case 'ww':
-          result.wakesByWorker = rec.d;
-          break;
-        case 'tt':
-          result.taskTimeline = rec.d;
-          break;
-        case 'sd':
-          result.schedDelays.push(rec.d);
-          break;
-        case 'cg':
-          result.cpuGroups.push(rec.d);
-          break;
-        case 'sg':
-          result.schedGroups.push(rec.d);
-          break;
-        case 'sp':
-          result.spanData = rec.d;
-          break;
+        case 'e': events.push(rec.d); break;
+        case 'c': cpuSamples.push(rec.d); break;
+        case 'x': customEvents.push(rec.d); break;
       }
     }
-    return result;
+    raw.events = events;
+    raw.cpuSamples = cpuSamples;
+    raw.customEvents = customEvents;
+    return raw;
   }
 
   /**
@@ -591,9 +583,9 @@
       fs.mkdirSync(cacheDir, { recursive: true });
     }
 
-    const concurrency = (opts.parallel === false) ? 1 : os.cpus().length;
-    const workerCandidate = path.resolve(__dirname, 'analyze_worker.js');
-    const workerFallback = path.resolve(__dirname, '..', 'skills', 'analyze_worker.js');
+    const concurrency = (opts.parallel === false) ? 1 : Math.min(os.cpus().length, 32);
+    const workerCandidate = path.resolve(__dirname, 'parse_worker.js');
+    const workerFallback = path.resolve(__dirname, '..', 'skills', 'parse_worker.js');
     const workerScript = fs.existsSync(workerCandidate) ? workerCandidate : workerFallback;
 
     function cachePathFor(file) {
@@ -610,183 +602,66 @@
       } catch { return false; }
     }
 
-    // Process one file. Cold: subprocess does parse+analyze+cache. Warm: read cache in-process.
-    function processFile(file) {
-      if (isCacheValid(file)) {
-        // Warm: read pre-computed NDJSON analysis results line-by-line
-        return Promise.resolve({ file, analysis: loadCachedAnalysis(cachePathFor(file)) });
-      }
-      // Cold: subprocess does parse + full analysis + writes cache
+    // Process one file. Cold: subprocess parses + caches. Warm: read cache.
+    // Returns Promise<ParsedTrace>.
+    // Ensure file is cached (spawn worker if needed). Returns Promise<void>.
+    function ensureCached(file) {
+      if (isCacheValid(file)) return Promise.resolve();
+      const tracePath = path.join(dirPath, file);
+      const cp = useCache ? cachePathFor(file) : path.join(os.tmpdir(), 'd9-' + process.pid + '-' + file + '.json');
+      const args = [workerScript, tracePath, cp];
       return new Promise((resolve, reject) => {
-        const tracePath = path.join(dirPath, file);
-        const cp = useCache ? cachePathFor(file) : path.join(os.tmpdir(), 'd9-' + process.pid + '-' + file + '.json');
-        const args = [workerScript, tracePath, cp];
         execFile(process.execPath, args, { maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
-          if (err) {
-            reject(new Error(`Failed to process ${file}: ${stderr || err.message}`));
-            return;
-          }
-          try {
-            const analysis = loadCachedAnalysis(cp);
-            if (!useCache) try { fs.unlinkSync(cp); } catch {}
-            resolve({ file, analysis });
-          } catch (e) {
-            reject(new Error(`Failed to load results for ${file}: ${e.message}`));
-          }
+          if (err) reject(new Error(`Failed to process ${file}: ${stderr || err.message}`));
+          else resolve();
         });
       });
     }
 
-    // Run all files through a concurrency-limited pool
+    // Dispatch all workers with concurrency limiting.
+    // Workers run independently of the iterator.
     if (onProgress) onProgress({ done: 0, total: files.length, file: null });
-    const resultsPromise = new Promise((resolve, reject) => {
-      const results = new Array(files.length);
-      let nextIdx = 0;
-      let completed = 0;
-      let active = 0;
-      let failed = false;
 
-      function dispatch() {
-        while (active < concurrency && nextIdx < files.length) {
-          const i = nextIdx++;
+    let workersCompleted = 0;
+    const fileReady = []; // fileReady[i] = Promise<void> that resolves when file i is cached
+    let dispatched = 0;
+    let active = 0;
+    const waiters = []; // resolve functions for throttled files
+
+    for (let i = 0; i < files.length; i++) {
+      fileReady.push(new Promise((resolve, reject) => {
+        function go() {
           active++;
-          processFile(files[i]).then(result => {
-            if (failed) return;
-            results[i] = result;
-            completed++;
+          ensureCached(files[i]).then(() => {
+            workersCompleted++;
             active--;
-            if (onProgress) onProgress({ done: completed, total: files.length, file: files[i] });
-            if (completed === files.length) {
-              resolve(results);
-            } else {
-              dispatch();
-            }
-          }, err => {
-            if (failed) return;
-            failed = true;
-            reject(err);
-          });
+            if (onProgress) onProgress({ done: workersCompleted, total: files.length, file: files[i] });
+            resolve();
+            if (waiters.length > 0) waiters.shift()();
+          }, reject);
         }
+        if (active < concurrency) go();
+        else waiters.push(go);
+      }));
+    }
+
+    return {
+      files: files,
+      [Symbol.asyncIterator]() {
+        let idx = 0;
+        return {
+          async next() {
+            if (idx >= files.length) return { done: true, value: undefined };
+            const i = idx++;
+            await fileReady[i];
+            const cp = useCache ? cachePathFor(files[i]) : path.join(os.tmpdir(), 'd9-' + process.pid + '-' + files[i] + '.json');
+            const trace = await loadCachedTrace(cp);
+            if (!useCache) try { fs.unlinkSync(cp); } catch {}
+            return { done: false, value: trace };
+          }
+        };
       }
-      dispatch();
-    });
-
-    // Merge all per-file analysis results into a single combined object.
-    // Process one file at a time so each file's analysis can be GC'd after merging.
-    return resultsPromise.then(results => {
-      const merged = {
-        files: files,
-        workerIds: [],
-        minTs: Infinity,
-        maxTs: -Infinity,
-        durationMs: 0,
-        eventCount: 0,
-        cpuSampleCount: 0,
-        onCpuSampleCount: 0,
-        offCpuSampleCount: 0,
-        taskSpawnCount: 0,
-        taskAliveAtEnd: 0,
-        maxLocalQueue: 0,
-        workerSpans: {},
-        queueSamples: [],
-        wakesByTask: {},
-        wakesByWorker: {},
-        schedDelays: [],
-        taskTimeline: { activeTaskSamples: [], taskFirstPoll: new Map() },
-        taskSpawnLocs: new Map(),
-        taskSpawnTimes: new Map(),
-        taskTerminateTimes: new Map(),
-        callframeSymbols: new Map(),
-        cpuGroups: new Map(), // leaf -> group, finalized to array at end
-        schedGroups: new Map(),
-        spanData: null,
-      };
-
-      const seenWorkers = new Set();
-
-      for (let i = 0; i < results.length; i++) {
-        const a = results[i].analysis;
-        results[i] = null; // allow GC
-
-        // Scalars
-        for (const w of a.workerIds) seenWorkers.add(w);
-        if (a.minTs < merged.minTs) merged.minTs = a.minTs;
-        if (a.maxTs > merged.maxTs) merged.maxTs = a.maxTs;
-        merged.eventCount += a.eventCount;
-        merged.cpuSampleCount += a.cpuSampleCount;
-        merged.onCpuSampleCount += a.onCpuSampleCount;
-        merged.offCpuSampleCount += a.offCpuSampleCount;
-        merged.taskSpawnCount += a.taskSpawnCount;
-        merged.taskAliveAtEnd += a.taskAliveAtEnd;
-        if (a.maxLocalQueue > merged.maxLocalQueue) merged.maxLocalQueue = a.maxLocalQueue;
-
-        // WorkerSpans: push into accumulator
-        for (const w of Object.keys(a.workerSpans)) {
-          const dst = merged.workerSpans[w] || (merged.workerSpans[w] = { polls: [], parks: [], actives: [], cpuSampleTimes: [] });
-          const src = a.workerSpans[w];
-          if (src.polls) for (const p of src.polls) dst.polls.push(p);
-          if (src.parks) for (const p of src.parks) dst.parks.push(p);
-          if (src.actives) for (const p of src.actives) dst.actives.push(p);
-          if (src.cpuSampleTimes) for (const t of src.cpuSampleTimes) dst.cpuSampleTimes.push(t);
-        }
-
-        // Simple arrays
-        if (a.queueSamples) for (const q of a.queueSamples) merged.queueSamples.push(q);
-        if (a.schedDelays) for (const sd of a.schedDelays) merged.schedDelays.push(sd);
-        if (a.taskTimeline && a.taskTimeline.activeTaskSamples) {
-          for (const s of a.taskTimeline.activeTaskSamples) merged.taskTimeline.activeTaskSamples.push(s);
-        }
-
-        // Wakes
-        for (const [k, v] of Object.entries(a.wakesByTask || {})) {
-          const dst = merged.wakesByTask[k] || (merged.wakesByTask[k] = []);
-          for (const w of v) dst.push(w);
-        }
-        for (const [k, v] of Object.entries(a.wakesByWorker || {})) {
-          const dst = merged.wakesByWorker[k] || (merged.wakesByWorker[k] = []);
-          for (const w of v) dst.push(w);
-        }
-
-        // Maps
-        if (a.taskSpawnLocs) for (const [k, v] of a.taskSpawnLocs) merged.taskSpawnLocs.set(k, v);
-        if (a.taskSpawnTimes) for (const [k, v] of a.taskSpawnTimes) merged.taskSpawnTimes.set(k, v);
-        if (a.taskTerminateTimes) for (const [k, v] of a.taskTerminateTimes) merged.taskTerminateTimes.set(k, v);
-        if (a.callframeSymbols) for (const [k, v] of a.callframeSymbols) merged.callframeSymbols.set(k, v);
-
-        // Sample groups: merge by leaf
-        for (const g of (a.cpuGroups || [])) {
-          const existing = merged.cpuGroups.get(g.leaf);
-          if (existing) existing.count += g.count;
-          else merged.cpuGroups.set(g.leaf, { ...g });
-        }
-        for (const g of (a.schedGroups || [])) {
-          const existing = merged.schedGroups.get(g.leaf);
-          if (existing) existing.count += g.count;
-          else merged.schedGroups.set(g.leaf, { ...g });
-        }
-      }
-
-      // Finalize
-      merged.workerIds = [...seenWorkers].sort((a, b) => a - b);
-      merged.durationMs = (merged.maxTs - merged.minTs) / 1e6;
-
-      // Sort merged arrays
-      for (const w of Object.keys(merged.workerSpans)) {
-        merged.workerSpans[w].polls.sort((a, b) => a.start - b.start);
-        merged.workerSpans[w].parks.sort((a, b) => a.start - b.start);
-        merged.workerSpans[w].actives.sort((a, b) => a.start - b.start);
-        merged.workerSpans[w].cpuSampleTimes.sort((a, b) => a - b);
-      }
-      merged.queueSamples.sort((a, b) => a.t - b.t);
-      merged.schedDelays.sort((a, b) => a.wakeTime - b.wakeTime);
-      merged.taskTimeline.activeTaskSamples.sort((a, b) => a.t - b.t);
-
-      // Finalize groups to sorted arrays
-      merged.cpuGroups = [...merged.cpuGroups.values()].sort((a, b) => b.count - a.count);
-      merged.schedGroups = [...merged.schedGroups.values()].sort((a, b) => b.count - a.count);
-
-      return merged;
-    });
+    };
   }
 
   // ── Symbol formatting utilities ──

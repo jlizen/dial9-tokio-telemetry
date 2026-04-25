@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 set -e
 
-# Generate a multi-segment trace dataset for eval testing.
-# Runs the metrics-service demo with a small rotation size to produce many files.
+# Generate a LARGE multi-segment trace dataset for stress testing.
+# Produces few large files (~22-35MB compressed each).
 #
 # Usage:
-#   ./generate_eval_traces.sh [--output DIR] [--aws-profile PROFILE]
+#   ./generate_eval_traces_large.sh [--output DIR] [--aws-profile PROFILE]
 #
-# Default output: /tmp/d9-eval-traces/
+# Default output: /tmp/d9-eval-traces-large/
 
-OUTPUT="/tmp/d9-eval-traces"
+OUTPUT="/tmp/d9-eval-traces-large"
 FLAG_PROFILE=""
 
 while [[ $# -gt 0 ]]; do
@@ -42,15 +42,12 @@ mkdir -p "$OUTPUT"
 TRACE_PATH="$OUTPUT/trace.bin"
 
 echo "Recording multi-segment trace..."
-# Run a workload with 2MB rotation to produce many small files matching
-# real production sizes (~376 KiB compressed, ~5 MiB raw per file).
-# 120s produces ~400-500 files, matching the smallest real load test run.
+# Run with default file size (100MB) to produce few large files.
 # We avoid --demo because it overrides trace-max-file-size.
 cargo run --release -p metrics-service --bin metrics-service -- \
     --trace-path "$TRACE_PATH" \
-    --trace-max-file-size 2000000 \
     --trace-max-total-size 10737418240 \
-    --run-duration 500 \
+    --run-duration 60 \
     --worker-threads 4
 
 FILE_COUNT=$(ls -1 "$OUTPUT"/trace.*.bin.gz 2>/dev/null | wc -l)

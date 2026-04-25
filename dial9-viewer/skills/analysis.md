@@ -7,14 +7,14 @@ After parsing, run the analysis pipeline to derive higher-level structures. All 
 The `recipes` segment provides a ready-to-use `analyze(tracePath)` function that runs the full pipeline and returns `{ trace, workerIds, minTs, maxTs, spans, taskTimeline, schedDelays }`. It works for both single files and directories. Use it as-is or follow the steps below individually.
 
 Pipeline steps:
-1. Parse the trace: `parseTrace(pathOrBuffer)` → `trace` (single file) or async iterable of `{file, trace}` (directory)
+1. Parse the trace: `for await (const trace of parseTrace(path))` yields one `ParsedTrace` per file
 2. Extract worker IDs from non-queue, non-wake events
 3. `buildWorkerSpans(events, workerIds, maxTs)` → reconstructs poll/park/active spans
 4. `attachCpuSamples(cpuSamples, workerSpans)` → attaches profiling data to poll spans
 5. `buildActiveTaskTimeline(taskSpawnTimes, taskTerminateTimes)` → task count over time
 6. `computeSchedulingDelays(workerSpans, workerIds, wakesByTask)` → wake-to-poll latencies
 
-For directories, `parseTrace` automatically parallelizes parsing across CPU cores, caches results to `<dir>/.d9-cache/`, and supports `{ sample: N }` for large runs. See the `recipes` segment for the unified boilerplate.
+For directories, `parseTrace` yields one `ParsedTrace` per file. See the `recipes` segment for the boilerplate.
 
 ## buildWorkerSpans(events, workerIds, maxTs)
 

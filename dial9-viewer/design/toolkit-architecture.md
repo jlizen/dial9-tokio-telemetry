@@ -17,7 +17,7 @@ The viewer bundles markdown "skills" that teach AI agents how to use the toolkit
 
 The header is the entry point. An agent runs `dial9-viewer agents`, reads the header, discovers available skill segments and the toolkit command, then copies the toolkit and starts analyzing.
 
-Non-`.md` files in `skills/` (like `analyze.js`, `analyze_worker.js`) are not served as skills but are included in the toolkit via symlinks in `toolkit/`.
+Non-`.md` files in `skills/` (like `analyze.js`, `parse_worker.js`) are not served as skills but are included in the toolkit via symlinks in `toolkit/`.
 
 ## Agent toolkit architecture
 
@@ -27,13 +27,15 @@ Non-`.md` files in `skills/` (like `analyze.js`, `analyze_worker.js`) are not se
 
 ### Directory (multi-file)
 
-`parseTrace(directoryPath)` processes all `.bin`/`.bin.gz` files in parallel:
+`parseTrace(directoryPath)` processes all `.bin`/`.bin.gz` files in parallel and returns an async iterable of `ParsedTrace` objects, one per file:
 
-1. Spawns one `analyze_worker.js` subprocess per file (concurrency capped at CPU count)
-2. Each worker: parses the trace, runs the full analysis pipeline, writes results to `.d9-cache/`
-3. Main process reads cached results and yields `{file, analysis}` objects
+1. Spawns one `parse_worker.js` subprocess per file (concurrency capped at CPU count)
+2. Each worker: parses the trace, writes the full `ParsedTrace` as NDJSON to `.d9-cache/`
+3. The async iterator yields one `ParsedTrace` at a time as the consumer requests them, keeping memory bounded
 
-Warm runs skip the subprocess and read cached results directly.
+`for await (const trace of parseTrace(input))` works for both single files and directories. For buffers (browser), `parseTrace` returns `Promise<ParsedTrace>`.
+
+Warm runs read cached NDJSON directly (no subprocesses).
 
 ### Cache format
 
@@ -41,15 +43,11 @@ Warm runs skip the subprocess and read cached results directly.
 
 | Tag | Content |
 |-----|---------|
-| `m` | Metadata: workerIds, duration, event counts, Maps as `[k,v]` arrays |
-| `w` | Per-worker spans: polls, parks, actives (one line per worker) |
-| `q` | Queue samples |
-| `wt`/`ww` | Wakes by task / by worker |
-| `tt` | Task timeline |
-| `sd` | Scheduling delay (one line per delay) |
-| `cg`/`sg` | CPU / scheduling sample group (one line per group) |
-| `sp` | Span data |
+| `m` | Metadata: scalar fields, Maps as `[k,v]` arrays |
+| `e` | Event (one per line) |
+| `c` | CPU sample (one per line) |
+| `x` | Custom event (one per line) |
 
-NDJSON is used so that no single line exceeds V8's string size limit, regardless of trace size. The reader splits a Buffer on newlines and parses each line independently.
+NDJSON avoids V8's string size limit. The reader splits a Buffer on newlines and parses each line independently.
 
 Cache invalidation is mtime-based. `--force` bypasses the cache.

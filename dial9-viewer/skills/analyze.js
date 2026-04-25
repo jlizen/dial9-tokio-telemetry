@@ -7,6 +7,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { createHistogram } = require('perf_hooks');
 
 // Resolve toolkit files: sibling (toolkit copy) or ui/ (source tree)
 function resolve(name) {
@@ -17,7 +18,7 @@ function resolve(name) {
 
 const { parseTrace, EVENT_TYPES, formatFrame, symbolizeChain, deduplicateSamples } = require(resolve('trace_parser.js'));
 const { buildWorkerSpans, attachCpuSamples, buildActiveTaskTimeline,
-        computeSchedulingDelays, filterPointsOfInterest } = require(resolve('trace_analysis.js'));
+        computeSchedulingDelays, filterPointsOfInterest, buildSpanData } = require(resolve('trace_analysis.js'));
 
 const TRACE_PATH = process.argv[2];
 if (!TRACE_PATH) { console.error('Usage: node analyze.js <trace.bin or directory>'); process.exit(1); }
@@ -82,8 +83,34 @@ function fmtRel(ns, minTs) { return fmtDur(ns - minTs); }
 
 // ── Main ──
 
-/** Run the full analysis report for a single parsed trace. */
-function analyzeOne(trace, label) {
+/** Create an empty accumulator for multi-trace analysis. */
+function createAccumulator() {
+  return {
+    workerIds: new Set(),
+    minTs: Infinity, maxTs: -Infinity,
+    eventCount: 0, cpuSampleCount: 0,
+    onCpuSampleCount: 0, offCpuSampleCount: 0,
+    taskSpawnCount: 0, taskAliveAtEnd: 0,
+    maxLocalQueue: 0,
+    workerStats: {},
+    longPolls: [],
+    schedDelayTotal: 0, schedDelayHighCount: 0, schedDelayWorst: [],
+    queueMax: 0, queueSum: 0, queueCount: 0,
+    taskTimelineSamples: [],
+    taskSpawnLocs: new Map(),
+    taskSpawnTimes: new Map(),
+    taskTerminateTimes: new Map(),
+    callframeSymbols: new Map(),
+    cpuGroupMap: new Map(),
+    schedGroupMap: new Map(),
+    spanStats: new Map(), // spanName -> Histogram
+    pollDurationByLoc: new Map(), // spawnLoc -> Histogram
+    schedDelayHist: null, // Histogram
+  };
+}
+
+/** Accumulate one trace's analysis into the running accumulator. */
+function accumulateTrace(acc, trace) {
   const workerIds = [...new Set(
     trace.events.filter(e => e.eventType !== EVENT_TYPES.QueueSample && e.eventType !== EVENT_TYPES.WakeEvent)
       .map(e => e.workerId)
@@ -91,39 +118,151 @@ function analyzeOne(trace, label) {
 
   const minTs = minBy(trace.events, e => e.timestamp);
   const maxTs = maxBy(trace.events, e => e.timestamp);
-  const durationMs = (maxTs - minTs) / 1e6;
 
-  // Run full analysis pipeline
   const spans = buildWorkerSpans(trace.events, workerIds, maxTs);
   attachCpuSamples(trace.cpuSamples, spans.workerSpans);
   const taskTimeline = buildActiveTaskTimeline(trace.taskSpawnTimes, trace.taskTerminateTimes);
   const schedDelays = computeSchedulingDelays(spans.workerSpans, workerIds, spans.wakesByTask);
 
-  reportAnalysis({
-    workerIds, minTs, maxTs, durationMs,
-    eventCount: trace.events.length,
-    cpuSampleCount: trace.cpuSamples.length,
-    taskSpawnCount: trace.taskSpawnTimes.size,
-    taskAliveAtEnd: trace.taskSpawnTimes.size - trace.taskTerminateTimes.size,
-    workerSpans: spans.workerSpans,
-    queueSamples: spans.queueSamples,
-    maxLocalQueue: spans.maxLocalQueue,
-    schedDelays,
-    taskTimeline,
-    taskSpawnLocs: trace.taskSpawnLocs,
-    taskSpawnTimes: trace.taskSpawnTimes,
-    taskTerminateTimes: trace.taskTerminateTimes,
-    callframeSymbols: trace.callframeSymbols,
-    onCpuSampleCount: trace.cpuSamples.filter(s => s.source === 0).length,
-    offCpuSampleCount: trace.cpuSamples.filter(s => s.source === 1).length,
-    cpuGroups: deduplicateSamples(trace.cpuSamples.filter(s => s.source === 0), trace.callframeSymbols),
-    schedGroups: deduplicateSamples(trace.cpuSamples.filter(s => s.source === 1), trace.callframeSymbols),
-  }, label);
+  // Scalars
+  for (const w of workerIds) acc.workerIds.add(w);
+  if (minTs < acc.minTs) acc.minTs = minTs;
+  if (maxTs > acc.maxTs) acc.maxTs = maxTs;
+  acc.eventCount += trace.events.length;
+  acc.cpuSampleCount += trace.cpuSamples.length;
+  const onCpu = trace.cpuSamples.filter(s => s.source === 0);
+  const offCpu = trace.cpuSamples.filter(s => s.source === 1);
+  acc.onCpuSampleCount += onCpu.length;
+  acc.offCpuSampleCount += offCpu.length;
+  acc.taskSpawnCount += trace.taskSpawnTimes.size;
+  acc.taskAliveAtEnd += trace.taskSpawnTimes.size - trace.taskTerminateTimes.size;
+  if (spans.maxLocalQueue > acc.maxLocalQueue) acc.maxLocalQueue = spans.maxLocalQueue;
+
+  // Per-worker stats
+  for (const w of workerIds) {
+    const ws = acc.workerStats[w] || (acc.workerStats[w] = {
+      activeNs: 0, parkNs: 0, ratioSum: 0, activeCount: 0,
+      pollCount: 0, parkCount: 0, schedWaits: [],
+    });
+    const s = spans.workerSpans[w];
+    for (const a of s.actives) { ws.activeNs += a.end - a.start; ws.ratioSum += a.ratio; ws.activeCount++; }
+    for (const p of s.parks) { ws.parkNs += p.end - p.start; ws.parkCount++; if (p.schedWait > 0) ws.schedWaits.push(p.schedWait); }
+    ws.pollCount += s.polls.length;
+
+    for (const p of s.polls) {
+      const dur = p.end - p.start;
+      // Poll duration histogram by spawn location
+      const loc = p.spawnLoc || '(unknown)';
+      let h = acc.pollDurationByLoc.get(loc);
+      if (!h) { h = createHistogram(); acc.pollDurationByLoc.set(loc, h); }
+      h.record(Math.max(1, Math.round(dur)));
+
+      if (dur > 1e6) {
+        acc.longPolls.push({ dur, poll: p, worker: w });
+        if (acc.longPolls.length > 200) { acc.longPolls.sort((a, b) => b.dur - a.dur); acc.longPolls.length = 100; }
+      }
+    }
+  }
+
+  // Queue depth
+  for (const q of spans.queueSamples) {
+    if (q.global > acc.queueMax) acc.queueMax = q.global;
+    acc.queueSum += q.global;
+    acc.queueCount++;
+  }
+
+  // Scheduling delays
+  for (const sd of schedDelays) {
+    acc.schedDelayTotal++;
+    // Histogram
+    if (!acc.schedDelayHist) { acc.schedDelayHist = createHistogram(); }
+    acc.schedDelayHist.record(Math.max(1, Math.round(sd.delay)));
+
+    if (sd.delay > 1e6) {
+      acc.schedDelayHighCount++;
+      acc.schedDelayWorst.push(sd);
+      if (acc.schedDelayWorst.length > 200) { acc.schedDelayWorst.sort((a, b) => b.delay - a.delay); acc.schedDelayWorst.length = 100; }
+    }
+  }
+
+  // Task timeline
+  for (const s of taskTimeline.activeTaskSamples) acc.taskTimelineSamples.push(s);
+
+  // Maps
+  for (const [k, v] of trace.taskSpawnLocs) acc.taskSpawnLocs.set(k, v);
+  for (const [k, v] of trace.taskSpawnTimes) acc.taskSpawnTimes.set(k, v);
+  for (const [k, v] of trace.taskTerminateTimes) acc.taskTerminateTimes.set(k, v);
+  for (const [k, v] of trace.callframeSymbols) acc.callframeSymbols.set(k, v);
+
+  // Sample groups
+  for (const g of deduplicateSamples(onCpu, trace.callframeSymbols)) {
+    const e = acc.cpuGroupMap.get(g.leaf);
+    if (e) e.count += g.count; else acc.cpuGroupMap.set(g.leaf, { ...g });
+  }
+  for (const g of deduplicateSamples(offCpu, trace.callframeSymbols)) {
+    const e = acc.schedGroupMap.get(g.leaf);
+    if (e) e.count += g.count; else acc.schedGroupMap.set(g.leaf, { ...g });
+  }
+
+  // Span durations (native HDR histogram for bounded memory, exact percentiles)
+  if (trace.customEvents && trace.customEvents.length > 0) {
+    const { spansByWorker } = buildSpanData(trace.customEvents);
+    for (const spans of Object.values(spansByWorker)) {
+      for (const s of spans) {
+        const dur = Math.max(1, Math.round(s.end - s.start));
+        let h = acc.spanStats.get(s.spanName);
+        if (!h) { h = createHistogram(); acc.spanStats.set(s.spanName, h); }
+        h.record(dur);
+      }
+    }
+  }
+}
+
+/** Finalize accumulator into the shape reportAnalysis expects. */
+function finalizeAccumulator(acc) {
+  acc.longPolls.sort((a, b) => b.dur - a.dur);
+  acc.schedDelayWorst.sort((a, b) => b.delay - a.delay);
+  acc.taskTimelineSamples.sort((a, b) => a.t - b.t);
+
+  const workerIds = [...acc.workerIds].sort((a, b) => a - b);
+  const workerSpans = {};
+  for (const w of workerIds) {
+    const ws = acc.workerStats[w] || { activeNs: 0, parkNs: 0, ratioSum: 0, activeCount: 0, pollCount: 0, parkCount: 0, schedWaits: [] };
+    const total = ws.activeNs + ws.parkNs;
+    ws.schedWaits.sort((a, b) => b - a);
+    workerSpans[w] = {
+      utilization: total > 0 ? ws.activeNs / total : 0,
+      avgCpuRatio: ws.activeCount > 0 ? ws.ratioSum / ws.activeCount : 0,
+      pollCount: ws.pollCount, parkCount: ws.parkCount, activeCount: ws.activeCount,
+      schedWaits: ws.schedWaits,
+    };
+  }
+
+  return {
+    workerIds, minTs: acc.minTs, maxTs: acc.maxTs,
+    durationMs: (acc.maxTs - acc.minTs) / 1e6,
+    eventCount: acc.eventCount, cpuSampleCount: acc.cpuSampleCount,
+    onCpuSampleCount: acc.onCpuSampleCount, offCpuSampleCount: acc.offCpuSampleCount,
+    taskSpawnCount: acc.taskSpawnCount, taskAliveAtEnd: acc.taskAliveAtEnd,
+    maxLocalQueue: acc.maxLocalQueue,
+    workerSpans,
+    longPolls: acc.longPolls,
+    schedDelayStats: { total: acc.schedDelayTotal, highCount: acc.schedDelayHighCount, worst: acc.schedDelayWorst },
+    queueDepthStats: { max: acc.queueMax, avg: acc.queueCount > 0 ? acc.queueSum / acc.queueCount : 0, samples: acc.queueCount },
+    taskTimeline: { activeTaskSamples: acc.taskTimelineSamples },
+    taskSpawnLocs: acc.taskSpawnLocs, taskSpawnTimes: acc.taskSpawnTimes,
+    taskTerminateTimes: acc.taskTerminateTimes, callframeSymbols: acc.callframeSymbols,
+    cpuGroups: [...acc.cpuGroupMap.values()].sort((a, b) => b.count - a.count),
+    schedGroups: [...acc.schedGroupMap.values()].sort((a, b) => b.count - a.count),
+    spanStats: acc.spanStats,
+    pollDurationByLoc: acc.pollDurationByLoc,
+    schedDelayHist: acc.schedDelayHist,
+  };
 }
 
 /** Print analysis report from pre-computed results. */
 function reportAnalysis(a, label) {
-  const { workerIds, minTs, durationMs, workerSpans, schedDelays, taskTimeline,
+  const { workerIds, minTs, durationMs,
           callframeSymbols, taskSpawnLocs, taskSpawnTimes, taskTerminateTimes } = a;
 
   console.log(`\n${'='.repeat(60)}`);
@@ -141,28 +280,18 @@ function reportAnalysis(a, label) {
   console.log(`WORKER UTILIZATION`);
   console.log(`${'─'.repeat(60)}`);
   for (const w of workerIds) {
-    const s = workerSpans[w];
-    const activeNs = s.actives.reduce((sum, a) => sum + (a.end - a.start), 0);
-    const parkNs = s.parks.reduce((sum, p) => sum + (p.end - p.start), 0);
-    const total = activeNs + parkNs;
-    const util = total > 0 ? (activeNs / total * 100).toFixed(1) : '0.0';
-    const avgCpu = s.actives.length > 0
-      ? (s.actives.reduce((sum, a) => sum + a.ratio, 0) / s.actives.length).toFixed(3) : 'N/A';
-    console.log(`  Worker ${w}: ${util}% active, ${s.polls.length} polls, ${s.parks.length} parks, avg CPU ratio: ${avgCpu}`);
+    const ws = a.workerSpans[w];
+    const total = ws.utilization;
+    const util = (total * 100).toFixed(1);
+    const avgCpu = ws.activeCount > 0 ? ws.avgCpuRatio.toFixed(3) : 'N/A';
+    console.log(`  Worker ${w}: ${util}% active, ${ws.pollCount} polls, ${ws.parkCount} parks, avg CPU ratio: ${avgCpu}`);
   }
 
   // ── Long polls ──
   console.log(`\n${'─'.repeat(60)}`);
   console.log(`LONG POLLS (>1ms)`);
   console.log(`${'─'.repeat(60)}`);
-  const longPolls = [];
-  for (const w of workerIds) {
-    for (const p of workerSpans[w].polls) {
-      const dur = p.end - p.start;
-      if (dur > 1e6) longPolls.push({ dur, poll: p, worker: w });
-    }
-  }
-  longPolls.sort((a, b) => b.dur - a.dur);
+  const longPolls = a.longPolls;
 
   if (longPolls.length === 0) {
     console.log('  None found ✅');
@@ -173,38 +302,28 @@ function reportAnalysis(a, label) {
       console.log(`  ▸ ${fmtDur(lp.dur)} on worker ${lp.worker} at ${fmtRel(p.start, minTs)}`);
       console.log(`    Task ${p.taskId}, spawn: ${p.spawnLoc || '(unknown)'}`);
 
-      // Deep-dive: scheduling samples show WHY the poll was long
       if (p.schedSamples?.length) {
         console.log(`    ${p.schedSamples.length} scheduling sample(s) — blocking call stacks:`);
         for (const s of p.schedSamples) {
           const frames = symbolizeChain(s.callchain, callframeSymbols);
           const { syscall, blocker, trigger, classified } = diagnoseStack(frames);
-          if (blocker) {
-            console.log(`      Blocked by:  ${blocker.symbol} (kernel)`);
-          }
+          if (blocker) console.log(`      Blocked by:  ${blocker.symbol} (kernel)`);
           if (syscall) console.log(`      Syscall:     ${syscall.display}`);
           if (trigger) {
             console.log(`      Called from:  ${trigger.display}`);
             if (trigger.location) console.log(`        at ${trigger.location}`);
           }
-          // Show the kernel path that explains the delay
           const kernelPath = classified.filter(f => f.kind === 'kernel').map(f => f.symbol);
-          if (kernelPath.length > 1) {
-            console.log(`      Kernel path: ${kernelPath.join(' → ')}`);
-          }
-          // Print condensed app stack (skip runtime/unknown, collapse long runs)
+          if (kernelPath.length > 1) console.log(`      Kernel path: ${kernelPath.join(' → ')}`);
           const appFrames = classified.filter(f => f.kind === 'app');
           if (appFrames.length > 0) {
             console.log(`      App call chain (${appFrames.length} frames):`);
-            // Show first 3 (closest to syscall) and last 3 (entry point)
             const show = appFrames.length <= 8 ? appFrames : [
               ...appFrames.slice(0, 3),
               { display: `... ${appFrames.length - 6} more frames ...`, kind: 'ellipsis' },
               ...appFrames.slice(-3),
             ];
-            for (const f of show) {
-              console.log(`        ${f.display}`);
-            }
+            for (const f of show) console.log(`        ${f.display}`);
           }
         }
       }
@@ -227,18 +346,28 @@ function reportAnalysis(a, label) {
   console.log(`${'─'.repeat(60)}`);
   console.log(`SCHEDULING DELAYS (wake → poll latency)`);
   console.log(`${'─'.repeat(60)}`);
-  const highDelays = schedDelays.filter(d => d.delay > 1e6);
-  if (highDelays.length === 0) {
+  const sds = a.schedDelayStats;
+  if (sds.highCount === 0) {
     console.log('  No delays > 1ms ✅');
   } else {
-    highDelays.sort((a, b) => b.delay - a.delay);
-    console.log(`  ${highDelays.length} delays > 1ms`);
-    console.log(`  Worst: ${fmtDur(highDelays[0].delay)}`);
-    console.log(`  p50:   ${fmtDur(highDelays[Math.floor(highDelays.length * 0.5)]?.delay || 0)}`);
-    console.log(`  p99:   ${fmtDur(highDelays[Math.floor(highDelays.length * 0.01)]?.delay || 0)}`);
+    const sorted = sds.worst.slice().sort((a, b) => b.delay - a.delay);
+    console.log(`  ${sds.highCount} delays > 1ms`);
+    if (a.schedDelayHist) {
+      console.log(`  p50: ${fmtDur(a.schedDelayHist.percentile(50))}, p99: ${fmtDur(a.schedDelayHist.percentile(99))}, max: ${fmtDur(a.schedDelayHist.max)}`);
+    }
     console.log(`\n  Top 5 worst:`);
-    for (const d of highDelays.slice(0, 5)) {
-      console.log(`    ${fmtDur(d.delay)} — task ${d.taskId} (spawn: ${d.poll.spawnLoc || '?'}) at ${fmtRel(d.wakeTime, minTs)}`);
+    for (const d of sorted.slice(0, 5)) {
+      console.log(`    ${fmtDur(d.delay)} — task ${d.taskId} (spawn: ${d.poll?.spawnLoc || '?'}) at ${fmtRel(d.wakeTime, minTs)}`);
+    }
+  }
+
+  // ── Poll duration by spawn location ──
+  if (a.pollDurationByLoc && a.pollDurationByLoc.size > 0) {
+    console.log(`\n${'─'.repeat(60)}`);
+    console.log(`POLL DURATION BY SPAWN LOCATION`);
+    console.log(`${'─'.repeat(60)}`);
+    for (const [loc, h] of [...a.pollDurationByLoc.entries()].sort((x, y) => y[1].max - x[1].max)) {
+      console.log(`  ${loc}: count=${h.count} p50=${(h.percentile(50)/1e3).toFixed(1)}µs p99=${(h.percentile(99)/1e3).toFixed(1)}µs max=${(h.max/1e6).toFixed(2)}ms`);
     }
   }
 
@@ -255,8 +384,7 @@ function reportAnalysis(a, label) {
     console.log(`    ${String(count).padStart(5)} × ${loc}`);
   }
 
-  // Task leak check
-  const atSamples = taskTimeline.activeTaskSamples;
+  const atSamples = a.taskTimeline.activeTaskSamples;
   if (atSamples.length > 0) {
     const peak = maxBy(atSamples, s => s.count);
     const final_ = atSamples[atSamples.length - 1].count;
@@ -277,7 +405,7 @@ function reportAnalysis(a, label) {
     }
   }
 
-  // ── Blocking calls (off-CPU samples) ──
+  // ── Blocking calls ──
   console.log(`\n${'─'.repeat(60)}`);
   console.log(`BLOCKING CALLS (scheduling/off-CPU samples)`);
   console.log(`${'─'.repeat(60)}`);
@@ -315,11 +443,10 @@ function reportAnalysis(a, label) {
   console.log(`\n${'─'.repeat(60)}`);
   console.log(`QUEUE DEPTH`);
   console.log(`${'─'.repeat(60)}`);
-  if (a.queueSamples.length > 0) {
-    const maxQ = maxBy(a.queueSamples, s => s.global);
-    const avgQ = a.queueSamples.reduce((s, q) => s + q.global, 0) / a.queueSamples.length;
-    console.log(`  Global queue: max=${maxQ}, avg=${avgQ.toFixed(1)}, samples=${a.queueSamples.length}`);
-    if (maxQ > 100) console.log('  ⚠ High queue depth — runtime may be overloaded');
+  const qd = a.queueDepthStats;
+  if (qd.samples > 0) {
+    console.log(`  Global queue: max=${qd.max}, avg=${qd.avg.toFixed(1)}, samples=${qd.samples}`);
+    if (qd.max > 100) console.log('  ⚠ High queue depth — runtime may be overloaded');
   } else {
     console.log('  No queue samples');
   }
@@ -330,13 +457,22 @@ function reportAnalysis(a, label) {
   console.log(`KERNEL SCHEDULING WAIT`);
   console.log(`${'─'.repeat(60)}`);
   for (const w of workerIds) {
-    const parks = workerSpans[w].parks.filter(p => p.schedWait > 0);
-    if (parks.length === 0) continue;
-    const waits = parks.map(p => p.schedWait).sort((a, b) => b - a);
-    const max = waits[0];
+    const ws = a.workerSpans[w];
+    if (ws.schedWaits.length === 0) continue;
+    const waits = ws.schedWaits;
+    const max = waits[0]; // already sorted descending
     const p50 = waits[Math.floor(waits.length * 0.5)];
-    // schedWait is in ns
     console.log(`  Worker ${w}: max=${(max/1e6).toFixed(1)}ms, p50=${(p50/1e6).toFixed(2)}ms, ${waits.filter(w => w > 1e6).length} events > 1ms`);
+  }
+
+  // ── Span durations ──
+  if (a.spanStats && a.spanStats.size > 0) {
+    console.log(`\n${'─'.repeat(60)}`);
+    console.log(`SPAN DURATIONS`);
+    console.log(`${'─'.repeat(60)}`);
+    for (const [name, h] of [...a.spanStats.entries()].sort((x, y) => y[1].count - x[1].count)) {
+      console.log(`  ${name}: count=${h.count} p50=${(h.percentile(50)/1e3).toFixed(1)}µs p99=${(h.percentile(99)/1e3).toFixed(1)}µs max=${(h.max/1e3).toFixed(1)}µs`);
+    }
   }
 
   console.log(`\n${'='.repeat(60)}`);
@@ -347,23 +483,156 @@ async function main() {
 
   if (!isDir) {
     console.log(`Loading ${TRACE_PATH}...`);
-    const trace = await parseTrace(TRACE_PATH);
-    analyzeOne(trace, path.basename(TRACE_PATH));
-  } else {
-    const opts = { force: FORCE };
-    if (SAMPLE) opts.sample = SAMPLE;
-    opts.onProgress = ({ done, total, file }) => {
-      if (done === 0) {
-        console.log(`Found ${total} trace file(s)`);
-      } else {
-        process.stderr.write(`\r  [${done}/${total}] ${file}`);
-      }
-    };
+    const acc = createAccumulator();
+    for await (const trace of parseTrace(TRACE_PATH)) {
+      accumulateTrace(acc, trace);
+    }
+    reportAnalysis(finalizeAccumulator(acc), path.basename(TRACE_PATH));
+    return;
+  }
 
-    console.log(`Analyzing directory: ${TRACE_PATH}`);
-    const analysis = await parseTrace(TRACE_PATH, opts);
-    process.stderr.write('\n');
-    reportAnalysis(analysis, `${analysis.files.length} files in ${path.basename(TRACE_PATH)}`);
+  // Directory: parallel parse + parallel analysis
+  const opts = {};
+  if (FORCE) opts.force = true;
+  if (SAMPLE) opts.sample = SAMPLE;
+
+  // Phase 1: parallel parse (populate cache)
+  let parseCount = 0;
+  let totalFiles = 0;
+  opts.onProgress = ({ done, total }) => {
+    totalFiles = total;
+    if (done === 0) console.log(`Found ${total} trace file(s)`);
+    else { parseCount = done; process.stderr.write(`\r  parsing: [${done}/${total}]`); }
+  };
+  console.log(`Analyzing directory: ${TRACE_PATH}`);
+
+  // Drain the iterator to ensure all files are cached
+  for await (const _ of parseTrace(TRACE_PATH, opts)) { /* just cache */ }
+  process.stderr.write('\n');
+
+  // Phase 2: parallel analysis via accumulate workers
+  const { execFile } = require('child_process');
+  const os = require('os');
+  const TRACE_EXT = /\.(bin|bin\.gz)$/;
+  const cacheDir = path.join(TRACE_PATH, '.d9-cache');
+  const cacheFiles = fs.readdirSync(cacheDir).filter(f => f.endsWith('.json'));
+
+  const accWorkerCandidate = path.resolve(__dirname, 'accumulate_worker.js');
+  const accWorkerFallback = path.resolve(__dirname, '..', 'skills', 'accumulate_worker.js');
+  const accWorkerScript = fs.existsSync(accWorkerCandidate) ? accWorkerCandidate : accWorkerFallback;
+
+  const concurrency = Math.min(os.cpus().length, 32);
+  const acc = createAccumulator();
+  let analyzed = 0;
+
+  // Dispatch accumulate workers with concurrency limit
+  await new Promise((resolveAll, rejectAll) => {
+    let nextIdx = 0;
+    let active = 0;
+    let failed = false;
+
+    function dispatch() {
+      while (active < concurrency && nextIdx < cacheFiles.length) {
+        const cf = cacheFiles[nextIdx++];
+        active++;
+        const cp = path.join(cacheDir, cf);
+        execFile(process.execPath, [accWorkerScript, cp], { maxBuffer: 256 * 1024 * 1024 }, (err, stdout, stderr) => {
+          if (failed) return;
+          if (err) { failed = true; rejectAll(new Error(`Analysis failed for ${cf}: ${stderr || err.message}`)); return; }
+          try {
+            const partial = JSON.parse(stdout);
+            mergePartial(acc, partial);
+            analyzed++;
+            process.stderr.write(`\r  analyzing: [${analyzed}/${cacheFiles.length}]`);
+          } catch (e) { failed = true; rejectAll(e); return; }
+          active--;
+          if (analyzed === cacheFiles.length) resolveAll();
+          else dispatch();
+        });
+      }
+    }
+    dispatch();
+  });
+  process.stderr.write('\n');
+
+  reportAnalysis(finalizeAccumulator(acc), `${cacheFiles.length} files in ${path.basename(TRACE_PATH)}`);
+}
+
+/** Merge a partial accumulator (from accumulate_worker) into the main accumulator. */
+function mergePartial(acc, p) {
+  for (const w of p.workerIds) acc.workerIds.add(w);
+  if (p.minTs < acc.minTs) acc.minTs = p.minTs;
+  if (p.maxTs > acc.maxTs) acc.maxTs = p.maxTs;
+  acc.eventCount += p.eventCount;
+  acc.cpuSampleCount += p.cpuSampleCount;
+  acc.onCpuSampleCount += p.onCpuSampleCount;
+  acc.offCpuSampleCount += p.offCpuSampleCount;
+  acc.taskSpawnCount += p.taskSpawnCount;
+  acc.taskAliveAtEnd += p.taskAliveAtEnd;
+  if (p.maxLocalQueue > acc.maxLocalQueue) acc.maxLocalQueue = p.maxLocalQueue;
+
+  // Worker stats
+  for (const [w, ws] of Object.entries(p.workerStats)) {
+    const dst = acc.workerStats[w] || (acc.workerStats[w] = {
+      activeNs: 0, parkNs: 0, ratioSum: 0, activeCount: 0, pollCount: 0, parkCount: 0, schedWaits: [],
+    });
+    dst.activeNs += ws.activeNs; dst.parkNs += ws.parkNs;
+    dst.ratioSum += ws.ratioSum; dst.activeCount += ws.activeCount;
+    dst.pollCount += ws.pollCount; dst.parkCount += ws.parkCount;
+    for (const w of ws.schedWaits) dst.schedWaits.push(w);
+  }
+
+  // Long polls
+  for (const lp of p.longPolls) acc.longPolls.push(lp);
+  if (acc.longPolls.length > 200) { acc.longPolls.sort((a, b) => b.dur - a.dur); acc.longPolls.length = 100; }
+
+  // Queue
+  if (p.queueMax > acc.queueMax) acc.queueMax = p.queueMax;
+  acc.queueSum += p.queueSum;
+  acc.queueCount += p.queueCount;
+
+  // Sched delays
+  acc.schedDelayTotal += p.schedDelayTotal;
+  acc.schedDelayHighCount += p.schedDelayHighCount;
+  for (const sd of p.schedDelayWorst) acc.schedDelayWorst.push(sd);
+  if (acc.schedDelayWorst.length > 200) { acc.schedDelayWorst.sort((a, b) => b.delay - a.delay); acc.schedDelayWorst.length = 100; }
+  // Feed delay values into histogram
+  if (p.schedDelayValues) {
+    if (!acc.schedDelayHist) acc.schedDelayHist = createHistogram();
+    for (const v of p.schedDelayValues) acc.schedDelayHist.record(v);
+  }
+
+  // Task timeline
+  for (const s of p.taskTimelineSamples) acc.taskTimelineSamples.push(s);
+
+  // Maps
+  if (p.taskSpawnLocs) for (const [k, v] of p.taskSpawnLocs) acc.taskSpawnLocs.set(k, v);
+  if (p.taskSpawnTimes) for (const [k, v] of p.taskSpawnTimes) acc.taskSpawnTimes.set(k, v);
+  if (p.taskTerminateTimes) for (const [k, v] of p.taskTerminateTimes) acc.taskTerminateTimes.set(k, v);
+  if (p.callframeSymbols) for (const [k, v] of p.callframeSymbols) acc.callframeSymbols.set(k, v);
+
+  // Sample groups
+  for (const g of (p.cpuGroups || [])) {
+    const e = acc.cpuGroupMap.get(g.leaf);
+    if (e) e.count += g.count; else acc.cpuGroupMap.set(g.leaf, { ...g });
+  }
+  for (const g of (p.schedGroups || [])) {
+    const e = acc.schedGroupMap.get(g.leaf);
+    if (e) e.count += g.count; else acc.schedGroupMap.set(g.leaf, { ...g });
+  }
+
+  // Poll durations by location -> histogram
+  for (const [loc, durations] of Object.entries(p.pollDurationsByLoc || {})) {
+    let h = acc.pollDurationByLoc.get(loc);
+    if (!h) { h = createHistogram(); acc.pollDurationByLoc.set(loc, h); }
+    for (const d of durations) h.record(d);
+  }
+
+  // Span durations -> histogram
+  for (const [name, durations] of Object.entries(p.spanDurations || {})) {
+    let h = acc.spanStats.get(name);
+    if (!h) { h = createHistogram(); acc.spanStats.set(name, h); }
+    for (const d of durations) h.record(d);
   }
 }
 

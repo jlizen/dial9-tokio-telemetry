@@ -28,50 +28,58 @@ node /tmp/d9-toolkit/analyze.js <trace.bin>
 node /tmp/d9-toolkit/analyze.js <directory-of-traces/>
 ```
 
-This copies `decode.js`, `trace_parser.js`, `trace_analysis.js`, `analyze.js`, and `analyze_worker.js` into the target directory. Run `analyze.js` for a full diagnostic report, then edit any of the files to drill deeper.
+Run `analyze.js` for a full diagnostic report.
 
-For directories, `analyze.js` automatically parallelizes across CPU cores and caches parsed results to disk (`.d9-cache/` inside the trace directory). Re-running skips already-cached files. Use `--force` to re-parse, or `--sample N` to analyze only N evenly-spaced files from large runs.
+For directories, use `--force` to re-parse all files without caching, or `--sample N` to analyze only N evenly-spaced files.
 
 ### Parsing traces manually
 
 ```javascript
 const { parseTrace, EVENT_TYPES } = require('./trace_parser.js');
-const { buildWorkerSpans, attachCpuSamples, buildActiveTaskTimeline,
-        computeSchedulingDelays, buildSpanData } = require('./trace_analysis.js');
+const { buildWorkerSpans, attachCpuSamples } = require('./trace_analysis.js');
 
-// Single file (pass a path or a buffer)
-const trace = await parseTrace('trace.bin');
-
-// Directory of traces: returns an async iterable of {file, trace}
-// Automatically parallelizes and caches to .d9-cache/
-for await (const { file, trace } of await parseTrace('/path/to/traces/')) {
-  // trace has the same shape as single-file parseTrace output
+for await (const trace of parseTrace('/path/to/traces/')) {
   const workerIds = [...new Set(
     trace.events.filter(e => e.eventType !== EVENT_TYPES.QueueSample && e.eventType !== EVENT_TYPES.WakeEvent)
       .map(e => e.workerId)
   )].sort((a, b) => a - b);
   const maxTs = trace.events.reduce((m, e) => Math.max(m, e.timestamp), -Infinity);
   const spans = buildWorkerSpans(trace.events, workerIds, maxTs);
-  // ... same analysis API as single-file
+  attachCpuSamples(trace.cpuSamples, spans.workerSpans);
 }
 ```
 
-Directory options: `{ force: true }` to ignore cache, `{ sample: 50 }` to parse only 50 evenly-spaced files, `{ parallel: false }` to force sequential processing.
+Pass a file path or a directory. For directories, traces are parsed in parallel and cached. Options: `{ force: true }` to ignore cache, `{ sample: 50 }` to parse only 50 evenly-spaced files.
 
 ## Fetching traces from S3
 
 If `dial9-viewer` is running (e.g. on port 3000), fetch traces via its API:
 
 ```javascript
-// Search for traces
+// List traces matching a prefix
 const resp = await fetch('http://localhost:3000/api/search?bucket=BUCKET&q=2026-04-09/19');
 const objects = await resp.json(); // [{key, size, last_modified}, ...]
 
-// Fetch and parse a trace (server gunzips and concatenates segments)
-const keys = objects.map(o => `keys=${encodeURIComponent(o.key)}`).join('&');
-const traceResp = await fetch(`http://localhost:3000/api/trace?bucket=BUCKET&${keys}`);
+// Single file: fetch and parse one trace
+const traceResp = await fetch(`http://localhost:3000/api/trace?bucket=BUCKET&keys=${encodeURIComponent(objects[0].key)}`);
 const buf = Buffer.from(await traceResp.arrayBuffer());
 const trace = await parseTrace(buf);
+
+// Multiple files: download to a local directory, then analyze
+const fs = require('fs');
+const dir = '/tmp/traces';
+fs.mkdirSync(dir, { recursive: true });
+// Download in parallel (20 at a time)
+const limit = 20;
+for (let i = 0; i < objects.length; i += limit) {
+  await Promise.all(objects.slice(i, i + limit).map(async (obj) => {
+    const r = await fetch(`http://localhost:3000/api/trace?bucket=BUCKET&keys=${encodeURIComponent(obj.key)}`);
+    fs.writeFileSync(`${dir}/${obj.key.split('/').pop()}`, Buffer.from(await r.arrayBuffer()));
+  }));
+}
+for await (const trace of parseTrace(dir)) {
+  // analyze each trace
+}
 ```
 
 ## Available skill segments

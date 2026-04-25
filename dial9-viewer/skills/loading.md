@@ -2,7 +2,7 @@
 
 ## ParsedTrace structure
 
-`parseTrace(buffer, options?)` returns:
+`parseTrace(path)` yields `ParsedTrace` objects:
 
 ```
 {
@@ -64,12 +64,13 @@ const EVENT_TYPES = {
 ## Parse options
 
 ```javascript
-const trace = await parseTrace(buffer, {
+for await (const trace of parseTrace('/path/to/trace.bin', {
   maxEvents: 100000,        // Cap event count (metadata/symbols always parsed)
   startTime: 1000000000,    // Filter events to time range (absolute ns)
   endTime:   2000000000,
-  onProgress: ({bytesRead, totalBytes, eventCount}) => { /* progress callback */ },
-});
+})) {
+  // ...
+}
 ```
 
 ## Converting timestamps
@@ -79,7 +80,7 @@ Trace timestamps are monotonic nanoseconds. To convert to wall clock:
 ```javascript
 if (trace.clockOffsetNs != null) {
   const wallNs = event.timestamp + trace.clockOffsetNs;
-  const wallDate = new Date(Number(wallNs / 1_000_000n));  // if using BigInt
+  const wallDate = new Date(wallNs / 1e6);
   // or: new Date(wallNs / 1e6)  // if already a JS number
 }
 ```

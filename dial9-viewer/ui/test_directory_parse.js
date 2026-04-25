@@ -7,10 +7,22 @@ const os = require("os");
 const { parseTrace, EVENT_TYPES } = require("./trace_parser.js");
 
 let failures = 0;
-
 function fail(msg) { console.log(`✗ ${msg}`); failures++; }
 function pass(msg) { console.log(`✓ ${msg}`); }
 function assert(cond, msg) { if (cond) pass(msg); else fail(msg); }
+
+/** Collect first trace from the async iterable. */
+async function first(input, opts) {
+  for await (const t of parseTrace(input, opts)) return t;
+  throw new Error("no traces");
+}
+
+/** Collect all traces from the async iterable. */
+async function collect(input, opts) {
+  const all = [];
+  for await (const t of parseTrace(input, opts)) all.push(t);
+  return all;
+}
 
 function setupDir(n) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "d9-test-dir-"));
@@ -20,45 +32,62 @@ function setupDir(n) {
   }
   return dir;
 }
-
 function cleanup(dir) { fs.rmSync(dir, { recursive: true, force: true }); }
 
 async function main() {
   const demoPath = path.join(__dirname, "demo-trace.bin");
   if (!fs.existsSync(demoPath)) { console.error("demo-trace.bin not found"); process.exit(1); }
 
-  // ── Single file path ──
+  // ── Single file: async iterable yields one ParsedTrace ──
   console.log("\nparseTrace with file path:");
   {
-    const trace = await parseTrace(demoPath);
-    assert(trace.magic === "D9TF", "file path: returns valid trace");
-    assert(trace.events.length > 0, "file path: has events");
-    assert(trace.taskSpawnTimes instanceof Map, "file path: taskSpawnTimes is Map");
+    const trace = await first(demoPath);
+    assert(trace.magic === "D9TF", "file: valid trace");
+    assert(trace.events.length > 0, "file: has events");
+    assert(trace.taskSpawnTimes instanceof Map, "file: taskSpawnTimes is Map");
+    assert(trace.callframeSymbols instanceof Map, "file: callframeSymbols is Map");
+    assert(trace.cpuSamples.length > 0, "file: has cpuSamples");
   }
 
-  // ── Directory: returns merged analysis ──
-  console.log("\nparseTrace with directory (merged):");
+  // ── Buffer: returns Promise<ParsedTrace> (backwards compatible) ──
+  console.log("\nparseTrace with buffer:");
+  {
+    const buf = fs.readFileSync(demoPath);
+    const trace = await parseTrace(buf);
+    assert(trace.magic === "D9TF", "buffer: valid trace");
+    assert(trace.events.length > 0, "buffer: has events");
+  }
+
+  // ── Directory: yields one ParsedTrace per file ──
+  console.log("\nparseTrace with directory:");
   {
     const dir = setupDir(3);
     try {
-      const a = await parseTrace(dir);
-      assert(Array.isArray(a.files), "merged: has files array");
-      assert(a.files.length === 3, `merged: 3 files (got ${a.files.length})`);
-      assert(Array.isArray(a.workerIds), "merged: has workerIds");
-      assert(a.workerIds.length > 0, "merged: has workers");
-      assert(a.eventCount > 0, "merged: has eventCount");
-      assert(a.workerSpans != null, "merged: has workerSpans");
-      assert(a.workerSpans[a.workerIds[0]].polls.length > 0, "merged: has polls");
-      assert(a.schedDelays.length > 0, "merged: has schedDelays");
-      assert(a.taskSpawnLocs instanceof Map, "merged: taskSpawnLocs is Map");
-      assert(a.callframeSymbols instanceof Map, "merged: callframeSymbols is Map");
-      assert(a.cpuGroups.length > 0, "merged: has cpuGroups");
-      assert(a.queueSamples.length > 0, "merged: has queueSamples");
+      const traces = await collect(dir);
+      assert(traces.length === 3, `dir: 3 traces (got ${traces.length})`);
+      for (const trace of traces) {
+        assert(trace.magic === "D9TF", "dir: valid trace");
+        assert(trace.events.length > 0, "dir: has events");
+        assert(trace.taskSpawnTimes instanceof Map, "dir: taskSpawnTimes is Map");
+        assert(trace.callframeSymbols instanceof Map, "dir: callframeSymbols is Map");
+        assert(trace.cpuSamples.length > 0, "dir: has cpuSamples");
+      }
+    } finally {
+      cleanup(dir);
+    }
+  }
 
-      // Verify merging: counts should be ~3x single file
-      const single = await parseTrace(demoPath);
-      const singleEvents = single.events.length;
-      assert(a.eventCount >= singleEvents * 2, `merged: eventCount (${a.eventCount}) >= 2x single (${singleEvents})`);
+  // ── Same shape for file and directory ──
+  console.log("\nUnified shape:");
+  {
+    const dir = setupDir(1);
+    try {
+      const fromFile = await first(demoPath);
+      const fromDir = await first(dir);
+      const keys = ["magic", "events", "cpuSamples", "taskSpawnTimes", "callframeSymbols", "customEvents"];
+      for (const k of keys) {
+        assert(k in fromFile && k in fromDir, `unified: both have '${k}'`);
+      }
     } finally {
       cleanup(dir);
     }
@@ -69,22 +98,17 @@ async function main() {
   {
     const dir = setupDir(2);
     try {
-      await parseTrace(dir);
+      await collect(dir);
       const cacheDir = path.join(dir, ".d9-cache");
       assert(fs.existsSync(cacheDir), "cache: .d9-cache created");
       const cached = fs.readdirSync(cacheDir).filter(f => f.endsWith(".json"));
       assert(cached.length === 2, `cache: 2 files (got ${cached.length})`);
 
-      // Verify NDJSON format
-      const firstLine = fs.readFileSync(path.join(cacheDir, cached[0]), "utf8").split("\n")[0];
-      const meta = JSON.parse(firstLine);
-      assert(meta.t === "m", "cache: first line is metadata");
-      assert(Array.isArray(meta.d.workerIds), "cache: has workerIds");
-
       // Warm run
-      const a2 = await parseTrace(dir);
-      assert(a2.eventCount > 0, "cache hit: has events");
-      assert(a2.taskSpawnLocs instanceof Map, "cache hit: Maps reconstructed");
+      const warm = await collect(dir);
+      assert(warm.length === 2, "cache hit: 2 traces");
+      assert(warm[0].events.length > 0, "cache hit: has events");
+      assert(warm[0].taskSpawnTimes instanceof Map, "cache hit: Maps reconstructed");
     } finally {
       cleanup(dir);
     }
@@ -95,17 +119,14 @@ async function main() {
   {
     const dir = setupDir(1);
     try {
-      await parseTrace(dir);
+      await collect(dir);
       const cacheDir = path.join(dir, ".d9-cache");
-      const cacheFiles = fs.readdirSync(cacheDir);
-      const cp = path.join(cacheDir, cacheFiles[0]);
+      const cp = path.join(cacheDir, fs.readdirSync(cacheDir)[0]);
       const mtimeBefore = fs.statSync(cp).mtimeMs;
-
       await new Promise(r => setTimeout(r, 50));
       const src = path.join(dir, fs.readdirSync(dir).filter(f => f.endsWith(".bin"))[0]);
       fs.utimesSync(src, new Date(), new Date());
-
-      await parseTrace(dir);
+      await collect(dir);
       assert(fs.statSync(cp).mtimeMs > mtimeBefore, "invalidation: cache updated");
     } finally {
       cleanup(dir);
@@ -117,13 +138,12 @@ async function main() {
   {
     const dir = setupDir(1);
     try {
-      await parseTrace(dir);
+      await collect(dir);
       const cacheDir = path.join(dir, ".d9-cache");
       const cp = path.join(cacheDir, fs.readdirSync(cacheDir)[0]);
       const mtimeBefore = fs.statSync(cp).mtimeMs;
-
       await new Promise(r => setTimeout(r, 50));
-      await parseTrace(dir, { force: true });
+      await collect(dir, { force: true });
       assert(fs.statSync(cp).mtimeMs > mtimeBefore, "force: cache rewritten");
     } finally {
       cleanup(dir);
@@ -135,9 +155,8 @@ async function main() {
   {
     const dir = setupDir(10);
     try {
-      const a = await parseTrace(dir, { sample: 3 });
-      assert(a.files.length === 3, `sample: 3 files (got ${a.files.length})`);
-      assert(a.eventCount > 0, "sample: has events");
+      const traces = await collect(dir, { sample: 3 });
+      assert(traces.length === 3, `sample: 3 traces (got ${traces.length})`);
     } finally {
       cleanup(dir);
     }
@@ -149,7 +168,7 @@ async function main() {
     const dir = setupDir(3);
     try {
       let threw = false;
-      try { await parseTrace(dir, { sample: 0 }); }
+      try { await collect(dir, { sample: 0 }); }
       catch (e) { threw = true; assert(e.message.includes("sample"), `sample=0: ${e.message}`); }
       assert(threw, "sample=0: throws");
     } finally {
@@ -162,8 +181,9 @@ async function main() {
   {
     const dir = setupDir(2);
     try {
-      const a = await parseTrace(dir, { cache: false });
-      assert(a.eventCount > 0, "no-cache: has events");
+      const traces = await collect(dir, { cache: false });
+      assert(traces.length === 2, "no-cache: 2 traces");
+      assert(traces[0].events.length > 0, "no-cache: has events");
       assert(!fs.existsSync(path.join(dir, ".d9-cache")), "no-cache: no .d9-cache");
     } finally {
       cleanup(dir);
@@ -176,7 +196,7 @@ async function main() {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "d9-test-empty-"));
     try {
       let threw = false;
-      try { await parseTrace(dir); }
+      try { await collect(dir); }
       catch (e) { threw = true; assert(e.message.includes("No .bin"), `empty: ${e.message}`); }
       assert(threw, "empty: throws");
     } finally {
@@ -190,10 +210,8 @@ async function main() {
     const dir = setupDir(3);
     try {
       const progress = [];
-      await parseTrace(dir, { onProgress: p => progress.push(p) });
-      assert(progress.length === 3, `progress: 3 calls (got ${progress.length})`);
-      assert(progress[0].done === 1, "progress: first done=1");
-      assert(progress[2].done === 3, "progress: last done=3");
+      await collect(dir, { onProgress: p => progress.push(p) });
+      assert(progress.length >= 3, `progress: >= 3 calls (got ${progress.length})`);
     } finally {
       cleanup(dir);
     }
@@ -204,8 +222,9 @@ async function main() {
   {
     const dir = setupDir(3);
     try {
-      const a = await parseTrace(dir, { parallel: false });
-      assert(a.eventCount > 0, "sequential: has events");
+      const traces = await collect(dir, { parallel: false });
+      assert(traces.length === 3, "sequential: 3 traces");
+      assert(traces[0].events.length > 0, "sequential: has events");
     } finally {
       cleanup(dir);
     }
@@ -216,7 +235,7 @@ async function main() {
   {
     const dir = setupDir(1);
     try {
-      await parseTrace(dir);
+      await collect(dir);
       const cacheDir = path.join(dir, ".d9-cache");
       const tmps = fs.readdirSync(cacheDir).filter(f => f.endsWith(".tmp"));
       assert(tmps.length === 0, "atomic: no .tmp files");
@@ -225,47 +244,26 @@ async function main() {
     }
   }
 
-  // ── Merged analysis is complete and usable ──
-  console.log("\nMerged analysis completeness:");
+  // ── Full analysis pipeline works on each yielded trace ──
+  console.log("\nAnalysis pipeline:");
   {
+    const { buildWorkerSpans, attachCpuSamples, computeSchedulingDelays } = require("./trace_analysis.js");
     const dir = setupDir(2);
     try {
-      // Cold
-      const a1 = await parseTrace(dir);
-      assert(a1.workerSpans[a1.workerIds[0]].polls.length > 0, "cold: polls");
-      assert(a1.workerSpans[a1.workerIds[0]].parks.length > 0, "cold: parks");
-      assert(a1.workerSpans[a1.workerIds[0]].actives.length > 0, "cold: actives");
-      assert(a1.schedDelays.length > 0, "cold: schedDelays");
-      assert(a1.taskTimeline.activeTaskSamples.length > 0, "cold: taskTimeline");
-      assert(a1.cpuGroups.length > 0, "cold: cpuGroups");
-      assert(a1.schedGroups.length > 0, "cold: schedGroups");
-      assert(a1.durationMs > 0, "cold: durationMs");
-
-      // Warm (from cache)
-      const a2 = await parseTrace(dir);
-      assert(a2.eventCount === a1.eventCount, "warm: same eventCount");
-      assert(a2.schedDelays.length === a1.schedDelays.length, "warm: same schedDelays count");
-    } finally {
-      cleanup(dir);
-    }
-  }
-
-  // ── Polls sorted by time across segments ──
-  console.log("\nMerged sort order:");
-  {
-    const dir = setupDir(3);
-    try {
-      const a = await parseTrace(dir);
-      for (const w of a.workerIds) {
-        const polls = a.workerSpans[w].polls;
-        for (let i = 1; i < polls.length; i++) {
-          if (polls[i].start < polls[i - 1].start) {
-            fail(`sort: worker ${w} polls not sorted at index ${i}`);
-            break;
-          }
-        }
+      for await (const trace of parseTrace(dir)) {
+        const workerIds = [...new Set(
+          trace.events.filter(e => e.eventType !== EVENT_TYPES.QueueSample && e.eventType !== EVENT_TYPES.WakeEvent)
+            .map(e => e.workerId)
+        )].sort((a, b) => a - b);
+        assert(workerIds.length > 0, "pipeline: has workers");
+        const maxTs = trace.events.reduce((m, e) => Math.max(m, e.timestamp), -Infinity);
+        const spans = buildWorkerSpans(trace.events, workerIds, maxTs);
+        assert(spans.workerSpans[workerIds[0]].polls.length > 0, "pipeline: has polls");
+        const { pollsWithCpuSamples } = attachCpuSamples(trace.cpuSamples, spans.workerSpans);
+        assert(pollsWithCpuSamples > 0, "pipeline: attachCpuSamples works");
+        const schedDelays = computeSchedulingDelays(spans.workerSpans, workerIds, spans.wakesByTask);
+        assert(schedDelays.length > 0, "pipeline: has schedDelays");
       }
-      pass("sort: polls sorted by start time across segments");
     } finally {
       cleanup(dir);
     }
