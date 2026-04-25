@@ -27,15 +27,26 @@ Non-`.md` files in `skills/` (like `analyze.js`, `parse_worker.js`) are not serv
 
 ### Directory (multi-file)
 
-`parseTrace(directoryPath)` processes all `.bin`/`.bin.gz` files in parallel and returns an async iterable of `ParsedTrace` objects, one per file:
+`parseTrace(directoryPath)` returns an async iterable of `ParsedTrace`, one per file:
 
 1. Spawns one `parse_worker.js` subprocess per file (concurrency capped at CPU count)
-2. Each worker: parses the trace, writes the full `ParsedTrace` as NDJSON to `.d9-cache/`
-3. The async iterator yields one `ParsedTrace` at a time as the consumer requests them, keeping memory bounded
+2. Each worker parses the trace and writes the full `ParsedTrace` as NDJSON to `.d9-cache/`
+3. The iterator yields one `ParsedTrace` at a time, keeping memory bounded
 
 `for await (const trace of parseTrace(input))` works for both single files and directories. For buffers (browser), `parseTrace` returns `Promise<ParsedTrace>`.
 
-Warm runs read cached NDJSON directly (no subprocesses).
+Warm runs read cached NDJSON directly (no subprocesses needed for cached files).
+
+### analyzeTraces (aggregated analysis)
+
+`analyzeTraces(path)` returns aggregated results across all files. Two parallel phases:
+
+1. **Parse phase**: `parse_worker.js` subprocesses populate the NDJSON cache (same as above)
+2. **Analysis phase**: `accumulate_worker.js` subprocesses each read one cached file, run the full analysis pipeline (`buildWorkerSpans`, `attachCpuSamples`, `computeSchedulingDelays`, `buildSpanData`), and output a partial accumulator as JSON to stdout
+
+The main process merges partial accumulators in constant memory: summing counts, keeping top-N long polls, feeding delay/duration values into Node's native `createHistogram()` for exact percentiles.
+
+The result includes: worker utilization, top long polls with stack traces, scheduling delay histograms, poll duration histograms by spawn location, span duration histograms, task lifecycle, CPU/scheduling sample groups, and queue depth stats.
 
 ### Cache format
 
