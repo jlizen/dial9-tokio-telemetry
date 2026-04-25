@@ -556,9 +556,12 @@ async function main() {
   const result = await analyzeTraces(TRACE_PATH, {
     force: FORCE,
     sample: SAMPLE || undefined,
-    onProgress: isDir ? ({ done, total }) => {
+    onProgress: isDir ? ({ done, total, cached }) => {
       if (done === 0) process.stderr.write(`Found ${total} trace file(s)\n`);
-      else if (done === total || done % Math.max(1, Math.floor(total / 100)) === 0) process.stderr.write(`\r  parsing: [${done}/${total}]`);
+      else if (done === total || done % Math.max(1, Math.floor(total / 100)) === 0) {
+        const cachedStr = cached > 0 ? ` (${cached} cached)` : '';
+        process.stderr.write(`\r  parsing: [${done}/${total}]${cachedStr}`);
+      }
     } : undefined,
     onParseComplete: isDir ? () => {
       process.stderr.write('\n');

@@ -604,9 +604,9 @@
 
     // Process one file. Cold: subprocess parses + caches. Warm: read cache.
     // Returns Promise<ParsedTrace>.
-    // Ensure file is cached (spawn worker if needed). Returns Promise<void>.
+    // Ensure file is cached (spawn worker if needed). Returns Promise<boolean> (true = cache hit).
     function ensureCached(file) {
-      if (isCacheValid(file)) return Promise.resolve();
+      if (isCacheValid(file)) return Promise.resolve(true);
       const tracePath = path.join(dirPath, file);
       const cp = useCache ? cachePathFor(file) : path.join(os.tmpdir(), 'd9-' + process.pid + '-' + file + '.json');
       const args = [workerScript, tracePath, cp];
@@ -623,19 +623,21 @@
     if (onProgress) onProgress({ done: 0, total: files.length, file: null });
 
     let workersCompleted = 0;
-    const fileReady = []; // fileReady[i] = Promise<void> that resolves when file i is cached
+    let cacheHits = 0;
+    const fileReady = [];
     let dispatched = 0;
     let active = 0;
-    const waiters = []; // resolve functions for throttled files
+    const waiters = [];
 
     for (let i = 0; i < files.length; i++) {
       fileReady.push(new Promise((resolve, reject) => {
         function go() {
           active++;
-          ensureCached(files[i]).then(() => {
+          ensureCached(files[i]).then((wasCached) => {
             workersCompleted++;
+            if (wasCached) cacheHits++;
             active--;
-            if (onProgress) onProgress({ done: workersCompleted, total: files.length, file: files[i] });
+            if (onProgress) onProgress({ done: workersCompleted, total: files.length, file: files[i], cached: cacheHits });
             resolve();
             if (waiters.length > 0) waiters.shift()();
           }, reject);
