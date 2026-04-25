@@ -550,21 +550,21 @@ async function analyzeTraces(tracePath, opts) {
 async function main() {
   const isDir = fs.statSync(TRACE_PATH).isDirectory();
 
-  if (isDir) console.log(`Analyzing directory: ${TRACE_PATH}`);
-  else console.log(`Loading ${TRACE_PATH}...`);
+  if (isDir) process.stderr.write(`Analyzing directory: ${TRACE_PATH}\n`);
+  else process.stderr.write(`Loading ${TRACE_PATH}...\n`);
 
   const result = await analyzeTraces(TRACE_PATH, {
     force: FORCE,
     sample: SAMPLE || undefined,
     onProgress: isDir ? ({ done, total }) => {
-      if (done === 0) console.log(`Found ${total} trace file(s)`);
-      else if (done === total || done % 50 === 0) process.stderr.write(`\r  parsing: [${done}/${total}]`);
+      if (done === 0) process.stderr.write(`Found ${total} trace file(s)\n`);
+      else if (done === total || done % 10 === 0) process.stderr.write(`\r  parsing: [${done}/${total}]`);
     } : undefined,
     onParseComplete: isDir ? () => {
       process.stderr.write('\n');
     } : undefined,
     onAnalysisProgress: isDir ? ({ done, total }) => {
-      if (done === total || done % 50 === 0) process.stderr.write(`\r  analyzing: [${done}/${total}]`);
+      if (done === total || done % 10 === 0) process.stderr.write(`\r  analyzing: [${done}/${total}]`);
     } : undefined,
   });
   if (isDir) process.stderr.write('\n');
