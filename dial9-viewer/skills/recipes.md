@@ -4,26 +4,52 @@ Concrete code snippets for answering common questions about trace data. All reci
 
 ## Setup boilerplate
 
+`parseTrace` accepts a file path, directory path, or raw buffer. For directories, it returns an async iterable of `{file, trace}` and handles parallelism and caching automatically. All recipes below work identically for single files or directories.
+
 ```javascript
-const fs = require('fs');
 const { parseTrace, EVENT_TYPES, formatFrame, symbolizeChain, deduplicateSamples } = require('./trace_parser.js');
 const { buildWorkerSpans, attachCpuSamples, buildActiveTaskTimeline,
         computeSchedulingDelays, filterPointsOfInterest, buildFgData } = require('./trace_analysis.js');
 
+// Works for both files and directories.
+// For a single file, the for-await loop runs once.
 async function analyze(tracePath) {
-  const trace = await parseTrace(fs.readFileSync(tracePath));
-  const workerIds = [...new Set(
-    trace.events.filter(e => e.eventType !== EVENT_TYPES.QueueSample && e.eventType !== EVENT_TYPES.WakeEvent)
-      .map(e => e.workerId)
-  )].sort((a, b) => a - b);
-  const maxTs = trace.events.reduce((m, e) => Math.max(m, e.timestamp), -Infinity);
-  const minTs = trace.events.reduce((m, e) => Math.min(m, e.timestamp), Infinity);
-  const spans = buildWorkerSpans(trace.events, workerIds, maxTs);
-  attachCpuSamples(trace.cpuSamples, spans.workerSpans);
-  const taskTimeline = buildActiveTaskTimeline(trace.taskSpawnTimes, trace.taskTerminateTimes);
-  const schedDelays = computeSchedulingDelays(spans.workerSpans, workerIds, spans.wakesByTask);
-  return { trace, workerIds, minTs, maxTs, spans, taskTimeline, schedDelays };
+  const result = await parseTrace(tracePath);
+  // Single file returns a trace directly; directory returns an async iterable
+  const items = result[Symbol.asyncIterator]
+    ? result
+    : [{ file: tracePath, trace: result }];
+
+  for await (const { file, trace } of items) {
+    const workerIds = [...new Set(
+      trace.events.filter(e => e.eventType !== EVENT_TYPES.QueueSample && e.eventType !== EVENT_TYPES.WakeEvent)
+        .map(e => e.workerId)
+    )].sort((a, b) => a - b);
+    const maxTs = trace.events.reduce((m, e) => Math.max(m, e.timestamp), -Infinity);
+    const minTs = trace.events.reduce((m, e) => Math.min(m, e.timestamp), Infinity);
+    const spans = buildWorkerSpans(trace.events, workerIds, maxTs);
+    attachCpuSamples(trace.cpuSamples, spans.workerSpans);
+    const taskTimeline = buildActiveTaskTimeline(trace.taskSpawnTimes, trace.taskTerminateTimes);
+    const schedDelays = computeSchedulingDelays(spans.workerSpans, workerIds, spans.wakesByTask);
+
+    // ... use trace, spans, schedDelays, etc. — all recipes below go here
+  }
 }
+```
+
+## Working with large directories
+
+For directories with many trace files, `parseTrace` automatically parallelizes across CPU cores and caches parsed results to `<dir>/.d9-cache/`. Re-running skips cached files.
+
+```javascript
+// Sample 50 evenly-spaced files from a large run for quick exploration
+const results = await parseTrace('/path/to/traces/', { sample: 50 });
+
+// Force re-parse, ignoring cache
+const results = await parseTrace('/path/to/traces/', { force: true });
+
+// Disable parallelism
+const results = await parseTrace('/path/to/traces/', { parallel: false });
 ```
 
 ## Which task has the longest poll time?

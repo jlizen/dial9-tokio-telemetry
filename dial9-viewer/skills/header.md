@@ -25,44 +25,38 @@ Get the analysis toolkit:
 ```bash
 dial9-viewer agents toolkit /tmp/d9-toolkit
 node /tmp/d9-toolkit/analyze.js <trace.bin>
+node /tmp/d9-toolkit/analyze.js <directory-of-traces/>
 ```
 
-This copies `decode.js`, `trace_parser.js`, `trace_analysis.js`, and `analyze.js` into the target directory. Run `analyze.js` for a full diagnostic report, then edit any of the files to drill deeper.
+This copies `decode.js`, `trace_parser.js`, `trace_analysis.js`, `analyze.js`, and `analyze_worker.js` into the target directory. Run `analyze.js` for a full diagnostic report, then edit any of the files to drill deeper.
+
+For directories, `analyze.js` automatically parallelizes across CPU cores and caches parsed results to disk (`.d9-cache/` inside the trace directory). Re-running skips already-cached files. Use `--force` to re-parse, or `--sample N` to analyze only N evenly-spaced files from large runs.
 
 ### Parsing traces manually
 
 ```javascript
-const fs = require('fs');
 const { parseTrace, EVENT_TYPES } = require('./trace_parser.js');
 const { buildWorkerSpans, attachCpuSamples, buildActiveTaskTimeline,
-        computeSchedulingDelays, filterPointsOfInterest, buildFgData,
-        buildSpanData } = require('./trace_analysis.js');
+        computeSchedulingDelays, buildSpanData } = require('./trace_analysis.js');
 
-const buf = fs.readFileSync('trace.bin');
-const trace = await parseTrace(buf);
+// Single file (pass a path or a buffer)
+const trace = await parseTrace('trace.bin');
 
-// Get worker IDs
-const workerIds = [...new Set(
-  trace.events.filter(e => e.eventType !== EVENT_TYPES.QueueSample && e.eventType !== EVENT_TYPES.WakeEvent)
-    .map(e => e.workerId)
-)].sort((a, b) => a - b);
-
-const minTs = trace.events.reduce((m, e) => Math.min(m, e.timestamp), Infinity);
-const maxTs = trace.events.reduce((m, e) => Math.max(m, e.timestamp), -Infinity);
-
-// Runtime events (polls, parks, wakes, scheduling)
-const spans = buildWorkerSpans(trace.events, workerIds, maxTs);
-attachCpuSamples(trace.cpuSamples, spans.workerSpans);
-const taskTimeline = buildActiveTaskTimeline(trace.taskSpawnTimes, trace.taskTerminateTimes);
-const schedDelays = computeSchedulingDelays(spans.workerSpans, workerIds, spans.wakesByTask);
-
-// Span events from #[instrument] (what happened INSIDE each poll)
-// These are separate from runtime events and require buildSpanData()
-const spanData = buildSpanData(trace.customEvents);
-// spanData.spansByWorker[workerId] = [{start, end, spanId, spanName, fields, parentSpanId, depth}, ...]
-// spanData.spanMeta = Map<spanId, {spanName, fields, parentSpanId}>
-// spanData.unmatchedSpans = spans with enter but no exit (trace ended mid-span)
+// Directory of traces: returns an async iterable of {file, trace}
+// Automatically parallelizes and caches to .d9-cache/
+for await (const { file, trace } of await parseTrace('/path/to/traces/')) {
+  // trace has the same shape as single-file parseTrace output
+  const workerIds = [...new Set(
+    trace.events.filter(e => e.eventType !== EVENT_TYPES.QueueSample && e.eventType !== EVENT_TYPES.WakeEvent)
+      .map(e => e.workerId)
+  )].sort((a, b) => a - b);
+  const maxTs = trace.events.reduce((m, e) => Math.max(m, e.timestamp), -Infinity);
+  const spans = buildWorkerSpans(trace.events, workerIds, maxTs);
+  // ... same analysis API as single-file
+}
 ```
+
+Directory options: `{ force: true }` to ignore cache, `{ sample: 50 }` to parse only 50 evenly-spaced files, `{ parallel: false }` to force sequential processing.
 
 ## Fetching traces from S3
 
