@@ -559,14 +559,14 @@ async function main() {
       if (done === 0) process.stderr.write(`Found ${total} trace file(s)\n`);
       else if (done === total || done % Math.max(1, Math.floor(total / 100)) === 0) {
         const cachedStr = cached > 0 ? ` (${cached} cached)` : '';
-        process.stderr.write(`\r  parsing: [${done}/${total}]${cachedStr}`);
+        process.stderr.write(`\r  parsing: [${done}/${total}]${cachedStr}\x1b[K`);
       }
     } : undefined,
     onParseComplete: isDir ? () => {
       process.stderr.write('\n');
     } : undefined,
     onAnalysisProgress: isDir ? ({ done, total }) => {
-      if (done === total || done % Math.max(1, Math.floor(total / 100)) === 0) process.stderr.write(`\r  analyzing: [${done}/${total}]`);
+      if (done === total || done % Math.max(1, Math.floor(total / 100)) === 0) process.stderr.write(`\r  analyzing: [${done}/${total}]\x1b[K`);
     } : undefined,
   });
   if (isDir) process.stderr.write('\n');
