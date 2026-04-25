@@ -269,6 +269,51 @@ async function main() {
     }
   }
 
+  // ── analyzeTraces respects sample option ──
+  console.log("\nanalyzeTraces sample:");
+  {
+    const { analyzeTraces } = require(path.resolve(__dirname, '..', 'skills', 'analyze.js'));
+    const dir = setupDir(6);
+    try {
+      // Full run to populate cache for all 6 files
+      const full = await analyzeTraces(dir);
+      const fullEvents = full.eventCount;
+
+      // Sampled run should only analyze 3 files, not all 6 cached
+      const sampled = await analyzeTraces(dir, { sample: 3 });
+      assert(sampled.eventCount > 0, "sample: has events");
+      assert(sampled.eventCount < fullEvents, `sample: fewer events than full (${sampled.eventCount} < ${fullEvents})`);
+      // Each file has the same event count, so sampled should be ~half
+      const expectedRatio = 3 / 6;
+      const actualRatio = sampled.eventCount / fullEvents;
+      assert(Math.abs(actualRatio - expectedRatio) < 0.01, `sample: event ratio ~0.5 (got ${actualRatio.toFixed(3)})`);
+    } finally {
+      cleanup(dir);
+    }
+  }
+
+  // ── analyzeTraces respects force option ──
+  console.log("\nanalyzeTraces force:");
+  {
+    const { analyzeTraces } = require(path.resolve(__dirname, '..', 'skills', 'analyze.js'));
+    const dir = setupDir(2);
+    try {
+      // First run populates cache
+      await analyzeTraces(dir);
+      const cacheDir = path.join(dir, '.d9-cache');
+      const cacheFile = path.join(cacheDir, fs.readdirSync(cacheDir).filter(f => f.endsWith('.json'))[0]);
+      const mtimeBefore = fs.statSync(cacheFile).mtimeMs;
+      await new Promise(r => setTimeout(r, 50));
+
+      // Force should re-parse even though cache is valid
+      await analyzeTraces(dir, { force: true });
+      const mtimeAfter = fs.statSync(cacheFile).mtimeMs;
+      assert(mtimeAfter > mtimeBefore, "force: cache file was rewritten");
+    } finally {
+      cleanup(dir);
+    }
+  }
+
   console.log(`\n${failures === 0 ? "✓ All" : "✗ " + failures + " failed,"} directory parsing tests ${failures === 0 ? "passed" : ""}!`);
   if (failures > 0) process.exit(1);
 }

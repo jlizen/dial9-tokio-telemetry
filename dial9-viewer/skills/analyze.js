@@ -502,7 +502,7 @@ async function analyzeTraces(tracePath, opts) {
   const { execFile } = require('child_process');
   const os = require('os');
   const cacheDir = path.join(tracePath, '.d9-cache');
-  const cacheFiles = fs.readdirSync(cacheDir).filter(f => f.endsWith('.json'));
+  const cacheFiles = iter.files.map(f => f.replace(/\.(bin|bin\.gz)$/, '') + '.json');
 
   const accWorkerCandidate = path.resolve(__dirname, 'analyze.js');
   const accWorkerFallback = path.resolve(__dirname, '..', 'skills', 'analyze.js');
