@@ -113,6 +113,8 @@ for (const [loc, count] of [...spawnCounts.entries()].sort((a, b) => b[1] - a[1]
 
 ## Flamegraph for a specific spawn location
 
+Requires per-trace iteration (see `parseTrace` boilerplate above).
+
 ```javascript
 const targetLoc = 'src/main.rs:42:5'; // adjust to your spawn location
 const targetSamples = trace.cpuSamples.filter(s => s.spawnLoc === targetLoc);

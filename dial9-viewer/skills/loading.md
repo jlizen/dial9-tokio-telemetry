@@ -8,8 +8,9 @@
 {
   events: TraceEvent[],          // PollStart, PollEnd, WorkerPark, WorkerUnpark, QueueSample, WakeEvent
   cpuSamples: CpuSample[],      // Periodic stack traces from perf/eBPF
+  customEvents: CustomEvent[],   // SpanEnter/SpanExit events from tracing layer (requires dial9-tokio-telemetry tracing-layer feature)
   spawnLocations: Map<string, string>,    // spawn location ID → source location
-  taskSpawnLocs: Map<number, string>,     // task ID → spawn location
+  taskSpawnLocs: Map<number, string|null>,// task ID → spawn location (null if unknown)
   taskSpawnTimes: Map<number, number>,    // task ID → spawn timestamp (ns)
   taskTerminateTimes: Map<number, number>,// task ID → terminate timestamp (ns)
   callframeSymbols: Map<string, {symbol, location}>, // address → resolved symbol

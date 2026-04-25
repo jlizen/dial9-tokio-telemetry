@@ -596,7 +596,7 @@ function mergePartial(acc, p) {
     dst.activeNs += ws.activeNs; dst.parkNs += ws.parkNs;
     dst.ratioSum += ws.ratioSum; dst.activeCount += ws.activeCount;
     dst.pollCount += ws.pollCount; dst.parkCount += ws.parkCount;
-    for (const w of ws.schedWaits) dst.schedWaits.push(w);
+    for (const sw of ws.schedWaits) dst.schedWaits.push(sw);
   }
 
   // Long polls

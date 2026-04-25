@@ -183,6 +183,60 @@ async function main() {
       console.log(`✓ schema sync: analysis.md matches analyzeTraces (${docKeys.size} keys)`);
       passed++;
     }
+
+    // Deep validation: nested object shapes
+    const deepErrors = [];
+    function checkKeys(obj, expected, label) {
+      const actual = new Set(Object.keys(obj));
+      for (const k of expected) { if (!actual.has(k)) deepErrors.push(`${label}: missing '${k}'`); }
+      for (const k of actual) { if (!expected.includes(k)) deepErrors.push(`${label}: undocumented '${k}'`); }
+    }
+    // workerSpans[w]
+    const w0 = result.workerSpans[result.workerIds[0]];
+    checkKeys(w0, ['utilization', 'avgCpuRatio', 'pollCount', 'parkCount', 'activeCount', 'schedWaits'], 'workerSpans[w]');
+    if (!Array.isArray(w0.schedWaits)) deepErrors.push('workerSpans[w].schedWaits: not an array');
+    // schedDelayStats
+    checkKeys(result.schedDelayStats, ['total', 'highCount', 'worst'], 'schedDelayStats');
+    // queueDepthStats
+    checkKeys(result.queueDepthStats, ['max', 'avg', 'samples'], 'queueDepthStats');
+    // taskTimeline
+    checkKeys(result.taskTimeline, ['activeTaskSamples'], 'taskTimeline');
+    // Maps
+    if (!(result.taskSpawnLocs instanceof Map)) deepErrors.push('taskSpawnLocs: not a Map');
+    if (!(result.taskSpawnTimes instanceof Map)) deepErrors.push('taskSpawnTimes: not a Map');
+    if (!(result.taskTerminateTimes instanceof Map)) deepErrors.push('taskTerminateTimes: not a Map');
+    if (!(result.callframeSymbols instanceof Map)) deepErrors.push('callframeSymbols: not a Map');
+    if (!(result.spanStats instanceof Map)) deepErrors.push('spanStats: not a Map');
+    if (!(result.pollDurationByLoc instanceof Map)) deepErrors.push('pollDurationByLoc: not a Map');
+    // schedDelayHist nullable
+    if (result.schedDelayHist != null && typeof result.schedDelayHist.percentile !== 'function') deepErrors.push('schedDelayHist: not a Histogram');
+    // longPolls shape
+    if (result.longPolls.length > 0) {
+      const lp = result.longPolls[0];
+      if (!('dur' in lp && 'poll' in lp && 'worker' in lp)) deepErrors.push('longPolls[0]: missing dur/poll/worker');
+    }
+    // schedDelays shape
+    if (result.schedDelays.length > 0) {
+      const sd = result.schedDelays[0];
+      for (const k of ['wakeTime', 'pollTime', 'delay', 'taskId', 'worker']) {
+        if (!(k in sd)) deepErrors.push(`schedDelays[0]: missing '${k}'`);
+      }
+    }
+    // cpuGroups shape
+    if (result.cpuGroups.length > 0) {
+      const g = result.cpuGroups[0];
+      for (const k of ['count', 'leaf', 'frames']) {
+        if (!(k in g)) deepErrors.push(`cpuGroups[0]: missing '${k}'`);
+      }
+    }
+
+    if (deepErrors.length > 0) {
+      for (const e of deepErrors) console.log(`✗ schema deep: ${e}`);
+      failed++;
+    } else {
+      console.log(`✓ schema deep: nested object shapes match documentation`);
+      passed++;
+    }
   }
 
   const unique = allRecipes.filter(r => !shouldSkip(r)).length;

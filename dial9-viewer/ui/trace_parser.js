@@ -602,8 +602,6 @@
       } catch { return false; }
     }
 
-    // Process one file. Cold: subprocess parses + caches. Warm: read cache.
-    // Returns Promise<ParsedTrace>.
     // Ensure file is cached (spawn worker if needed). Returns Promise<boolean> (true = cache hit).
     function ensureCached(file) {
       if (isCacheValid(file)) return Promise.resolve(true);
@@ -613,7 +611,7 @@
       return new Promise((resolve, reject) => {
         execFile(process.execPath, args, { maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
           if (err) reject(new Error(`Failed to process ${file}: ${stderr || err.message}`));
-          else resolve();
+          else resolve(false);
         });
       });
     }
@@ -625,7 +623,6 @@
     let workersCompleted = 0;
     let cacheHits = 0;
     const fileReady = [];
-    let dispatched = 0;
     let active = 0;
     const waiters = [];
 

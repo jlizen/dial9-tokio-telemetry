@@ -54,7 +54,7 @@ For directories, `parseTrace` yields one `ParsedTrace` per file. See the `recipe
     worst: [{wakeTime, pollTime, delay, taskId, wakerTaskId, worker, poll}],  // top 100 by delay
   },
   schedDelays: [{wakeTime, pollTime, delay, taskId, wakerTaskId, worker, poll}],  // same as schedDelayStats.worst
-  schedDelayHist: Histogram,        // Node.js perf_hooks Histogram of all delay values (ns)
+  schedDelayHist: Histogram|null,    // Node.js perf_hooks Histogram of all delay values (ns), null if no delays
 
   // ── Long polls ──
   longPolls: [{dur, poll, worker}], // polls > 1ms, top 100 sorted by duration descending
@@ -71,7 +71,7 @@ For directories, `parseTrace` yields one `ParsedTrace` per file. See the `recipe
   taskTimeline: {
     activeTaskSamples: [{t, count}],  // task count over time, sorted by t
   },
-  taskSpawnLocs: Map<taskId, string>,       // taskId → spawn location string
+  taskSpawnLocs: Map<taskId, string|null>,  // taskId → spawn location string (null if unknown)
   taskSpawnTimes: Map<taskId, number>,      // taskId → spawn timestamp (ns)
   taskTerminateTimes: Map<taskId, number>,  // taskId → termination timestamp (ns)
 
