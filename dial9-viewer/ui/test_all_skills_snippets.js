@@ -159,6 +159,32 @@ async function main() {
   } // end inputs loop
 
   fs.rmSync(testDir, { recursive: true, force: true });
+
+  // ── Schema sync: analysis.md documents every analyzeTraces key and vice versa ──
+  const { analyzeTraces: at } = require(path.resolve(__dirname, '..', 'skills', 'analyze.js'));
+  const result = await at(demoPath);
+  const actualKeys = new Set(Object.keys(result));
+
+  const analysisMd = fs.readFileSync(path.join(skillsDir, "analysis.md"), "utf8");
+  const schemaMatch = analysisMd.match(/## analyzeTraces return schema[\s\S]*?```\n\{([\s\S]*?)\n\}[\s\S]*?```/);
+  if (!schemaMatch) {
+    console.log("✗ schema sync: could not find analyzeTraces return schema block in analysis.md");
+    failed++;
+  } else {
+    // Top-level keys are at exactly 2-space indent (not deeper)
+    const docKeys = new Set(schemaMatch[1].match(/^ {2}(\w+):/gm).map(m => m.trim().replace(/:$/, '')));
+    const undocumented = [...actualKeys].filter(k => !docKeys.has(k));
+    const stale = [...docKeys].filter(k => !actualKeys.has(k));
+    if (undocumented.length > 0 || stale.length > 0) {
+      if (undocumented.length) console.log(`✗ schema sync: keys in analyzeTraces but not in analysis.md: ${undocumented.join(', ')}`);
+      if (stale.length) console.log(`✗ schema sync: keys in analysis.md but not in analyzeTraces: ${stale.join(', ')}`);
+      failed++;
+    } else {
+      console.log(`✓ schema sync: analysis.md matches analyzeTraces (${docKeys.size} keys)`);
+      passed++;
+    }
+  }
+
   const unique = allRecipes.filter(r => !shouldSkip(r)).length;
   console.log(`\n${failed === 0 ? "✓" : "✗"} ${unique} snippets × ${inputs.length} modes: ${passed} passed, ${failed} failed, ${skipped} skipped`);
   if (failed > 0) process.exit(1);
