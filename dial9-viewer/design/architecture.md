@@ -4,8 +4,16 @@
 
 `dial9-viewer` is a trace viewer and analysis toolkit for dial9 runtime traces. It has two modes:
 
-- **Web UI**: Rust HTTP server that fetches traces from S3, serves the viewer HTML/JS, and provides a REST API (`/api/`) for listing, searching, and fetching traces. The API can also be used directly via `curl` or scripts without the browser UI.
-- **Agent toolkit**: JS scripts (`analyze.js`, `trace_parser.js`, `trace_analysis.js`) that parse and analyze traces programmatically. Distributed via `dial9-viewer agents toolkit <dir>`.
+- **Web UI**: Browser-based trace viewer with a Rust/Axum backend for S3 trace storage.
+- **Agent toolkit**: JS scripts for programmatic trace analysis. Distributed via `dial9-viewer agents toolkit <dir>`.
+
+## Web UI
+
+The viewer is a single-page app (`viewer.html`) served by a Rust/Axum HTTP server. The server's role is trace storage and retrieval; all parsing and analysis runs client-side in the browser using the same JS libraries (`trace_parser.js`, `trace_analysis.js`) as the agent toolkit.
+
+The server exposes a REST API under `/api/` for browsing S3 prefixes, searching traces by metadata, and fetching trace binaries. The API is usable independently via `curl` or scripts for automation without the browser.
+
+Traces can also be loaded by drag-and-drop or file picker without a server (static file mode).
 
 ## Agent skills (steering)
 
