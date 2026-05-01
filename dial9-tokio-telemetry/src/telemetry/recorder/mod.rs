@@ -496,6 +496,27 @@ impl TelemetryHandle {
     }
 }
 
+/// Spawn a future with telemetry wake tracking using the current thread's
+/// [`TelemetryHandle`].
+///
+/// This is a convenience wrapper around
+/// [`TelemetryHandle::current().spawn(future)`](TelemetryHandle::spawn).
+/// If the current thread is not owned by a dial9 runtime, the future is
+/// spawned via plain [`tokio::spawn`] without wake tracking.
+///
+/// # Panics
+///
+/// Panics if called from outside a tokio runtime context (same
+/// as [`tokio::spawn`]).
+#[track_caller]
+pub fn spawn<F>(future: F) -> tokio::task::JoinHandle<F::Output>
+where
+    F: std::future::Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    TelemetryHandle::current().spawn(future)
+}
+
 /// RAII guard that sets `INSTRUMENTED_SPAWN` to `true` on creation and
 /// resets it to `false` on drop, even if `tokio::spawn` panics.
 struct InstrumentedSpawnGuard;
