@@ -496,13 +496,13 @@ impl TelemetryHandle {
     }
 }
 
-/// Spawn a future with telemetry wake tracking using the current thread's
-/// [`TelemetryHandle`].
+/// Spawn a traced task on the current tokio runtime.
 ///
-/// This is a convenience wrapper around
-/// [`TelemetryHandle::current().spawn(future)`](TelemetryHandle::spawn).
-/// If the current thread is not owned by a dial9 runtime, the future is
-/// spawned via plain [`tokio::spawn`] without wake tracking.
+/// Like [`tokio::spawn`], but wraps the future with wake-event tracking
+/// when called from a thread owned by a dial9 runtime. On other threads,
+/// falls back to plain [`tokio::spawn`].
+///
+/// Equivalent to [`TelemetryHandle::current().spawn(future)`](TelemetryHandle::spawn).
 ///
 /// # Panics
 ///
