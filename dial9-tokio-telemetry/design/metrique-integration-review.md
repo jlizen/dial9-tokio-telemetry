@@ -91,6 +91,32 @@ Metrique `Flex<(String, T)>` lowers to a new dial9 typed-map field, encoded as `
 
 `tee(emf_stream, Dial9Stream::new(&handle))` inside a `BackgroundQueue`, `metrique_sink(...)` builder, and `ServiceMetrics::attach_to_stream_with_dial9` all remain as the three composition paths. The wire to metrique is the descriptor, not a new composition primitive.
 
+## Why not compile-time (in one place)
+
+The compile-time path keeps coming up in review, so consolidating the argument here rather than scattering it across alternatives.
+
+**Option 1: User derives `TraceEvent` on their metrique struct.** Blocked by `BoxEntry` erasure. The concrete type is gone by the time `Dial9Stream` sees the entry. Recovering it requires one of:
+
+- A parallel object-safe trait plus a dial9-owned box type. Object safety itself is not the blocker (as Russell noted, `Encodeable` is `dyn`-safe). The blocker is threading the sink-specific bound through `BoxEntrySink::append_any`, which takes `impl Entry + Send + 'static` and boxes internally. That bound cannot be tightened without breaking every existing user.
+- A metrique-side change so `ServiceMetrics` can attach a sink typed concretely over `TraceEvent + Entry`. This propagates the sink-specific bound through every composition primitive (`tee`, `BackgroundQueue`, `FixedFractionSample`, `CongressSample`, global attach). Any user combining two such sinks would have to satisfy both bounds simultaneously on every entry type. Ecosystem fragmentation is a concrete cost, not a slogan.
+- A TypeId-keyed vtable bridge on `BoxEntry`, where each consumer registers a `TypeId -> &dyn T` table. This is architecturally what the descriptor is, just generalised across consumers instead of one table per sink. **The descriptor is the least-bad vtable bridge, done once for all consumers.**
+
+**Option 2: Blanket `TraceField for impl Value`.** Russell's thread raised this. It works for the primitives path: every metrique primitive automatically gains a `TraceField` impl. It also works for user types that implement only `Value`. What it does not do is give the sink any compile-time shape information about those types; the blanket collapses to a dyn-dispatched `TraceField::encode` call. That is effectively runtime dispatch through a differently-named trait. The descriptor path already does that, with the benefit of also describing optionality, Flex, and units.
+
+Without the blanket, users ship a bespoke `TraceField` impl per custom type, which is a maintenance cost that grows with the user's type inventory. With the blanket, compile-time shape is gone and we are back to runtime dispatch. Neither is better than reading the descriptor.
+
+**Option 3: Metrique emits a per-sink compile-time wire plan.** This is the strongest compile-time path and we are not rejecting it forever. It would let dial9 skip `Entry::write` dispatch entirely on the flush thread: one `encode_for_dial9(entry, encoder)` function per entry type.
+
+We are not building it now because:
+
+- The descriptor carries strictly less information than a static plan would need. A plan layer can be added on top of the descriptor without breaking anything. The descriptor path is forward-compatible with this; it is not a permanent alternative.
+- The dial9 cost on the flush thread is already off the caller's critical path (`BackgroundQueue` absorbs latency). The marginal win from a static plan is CPU on the flush thread, not latency on the caller thread.
+- Shipping the plan requires metrique to either understand dial9's wire format (bad: tight coupling) or generate a sink-pluggable plan that dial9 consumes (more design work, not shorter than the descriptor design).
+
+**Option 4: Hybrid. Descriptor for heterogeneous queues, typed sink for homogeneous pipelines.** This is real and we do not rule it out; a future typed-entry dial9 sink can coexist with the descriptor path. We chose not to ship two paths now because the descriptor covers both cases, and users wanting maximum performance on a homogeneous pipeline can add the static plan as a follow-up once the descriptor lands.
+
+**Bottom line.** Compile-time would buy us flush-thread CPU and nothing else. It would cost us `BoxEntry` compatibility or ecosystem fragmentation, and it would still need a descriptor-or-equivalent to handle optional fields, Flex, units, and context extraction. The descriptor path is the one that survives after you cross all those items off.
+
 ## Alternatives considered
 
 ### Alternative A: Runtime shape fingerprinting (the original PR)

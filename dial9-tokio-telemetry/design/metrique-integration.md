@@ -258,6 +258,49 @@ Wire layout is conventional (`<count> <repeated key value>`), using existing sca
 - **Caller thread not owned by a dial9 runtime**: `Dial9Context::capture()` records best-effort values and the entry encodes normally.
 - **Panic inside `Value::write`**: caught per entry; the offending event is dropped with a rate-limited log. The flush thread's encoder state stays valid.
 
+## Validation
+
+Validation of entry-to-sink compatibility runs in two places. Both rest on the metrique descriptor system described in `docs/entry-descriptors.md` in the metrique repo.
+
+### Compile-time
+
+The metrique macro catches generic structural errors for everyone: duplicate source tags, conflicting `field_tag` + `field_tag(skip)`, conflicting struct-level defaults. Those diagnostics fire regardless of what tags are in play.
+
+Dial9-specific compile-time diagnostics are produced by a helper macro shipped in the dial9 crate. Users opt in by invoking it alongside their metrique-derived struct:
+
+```rust
+// Optional, same module as the #[metrics(..)] attribute.
+dial9::assert_dial9_compatible!(RequestMetrics);
+```
+
+The helper inspects the macro-generated descriptor at const-eval time and emits compile errors for dial9-specific mistakes:
+
+- One or more fields tagged `InTrace` but the entry declares no `Dial9` source.
+- A field tagged `InternString` whose closed shape is not a string type or a Flex with a string-capable position.
+- A field tagged `InTrace` whose closed shape is `FieldShape::Opaque` (the sink has no way to encode it).
+- A source tagged `Dial9` but no fields tagged `InTrace` (mildly suspect; warning, not error).
+
+We keep these checks in a helper macro rather than hardcoding them into metrique because metrique does not need to know about dial9 specifically. The helper is strictly opt-in; users who do not invoke it still get the runtime diagnostics below.
+
+### Runtime
+
+The first time `Dial9Stream` sees a descriptor, it performs the same checks as the helper macro and caches the verdict. The cache is keyed on the `&'static EntryDescriptor` pointer, so subsequent entries of the same type pay nothing.
+
+Failure modes:
+
+| Condition | Behaviour |
+| --- | --- |
+| `descriptor() == None` (hand-written entry) | rate-limited warn once per observed concrete type; entry dropped from dial9 path; EMF unaffected |
+| Descriptor has `InTrace` fields but no `Dial9` source | rate-limited warn once per descriptor; entries of this type dropped from dial9 path |
+| Descriptor has `InternString` on a non-string-capable shape | rate-limited warn once per descriptor + field; the offending field is skipped on the wire; rest of entry encodes |
+| `FieldShape::Opaque` field tagged `InTrace` | rate-limited warn once per descriptor + field; the offending field is skipped on the wire; rest of entry encodes |
+| Inert `TelemetryHandle` | `Ok(())` fast path; no work; entries still reach EMF |
+| Panic inside `Value::write` | event dropped; rate-limited warn; flush-thread state preserved |
+
+None of these failure modes crash the sink or stop the pipeline. Every diagnostic is rate-limited `tracing::warn!` with enough context (entry type name when available; descriptor pointer as a fallback) to trace back to the offending struct.
+
+Periodic `tracing::debug!` reports aggregate counters: descriptors seen, descriptors skipped, events emitted, fields skipped. Off at `info` by default.
+
 ## Future evolution
 
 - Hand-written `Entry` impls opting into descriptors (once metrique supports it) so dial9 can encode them without fingerprinting.
