@@ -303,7 +303,7 @@ Periodic `tracing::debug!` reports aggregate counters: descriptors seen, descrip
 
 ## Future evolution
 
-- Hand-written `Entry` impls opting into descriptors (once metrique supports it) so dial9 can encode them without fingerprinting.
+- Hand-written `Entry` impls opting into descriptors (once metrique ships `DescribeEntry`) so they participate in dial9 without derive sugar.
 - Per-sink compile-time wire plans, once metrique can emit them, to replace the flush-thread `Entry::write` walk with a direct encode.
 - More schema annotations: display hints, aggregation hints, privacy labels. Same mechanism as units.
 - Heterogeneous Flex values once metrique carries a tagged runtime value model for them.

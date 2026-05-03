@@ -139,7 +139,7 @@ Items consciously left out of this round. Each has a clear follow-up path; none 
 - **`FieldShape::Opaque` fields selected for `InTrace` are reported and skipped**. We do not add a runtime "encode unknown as string" path. Follow-up: either the user adds a known value type, or a future extension defines a tagged dynamic value.
 - **Flex values are homogeneous (one `T` per map)**. Heterogeneous dynamic maps (`map<string, Any>`) are out of scope and would need both a metrique value-tag model and a dial9 tagged wire value.
 - **Compile-time dial9 wire plan.** Not implemented. The descriptor path is enough for v1; a static plan is strictly additive on top.
-- **Runtime fingerprinting fallback for hand-written entries.** Removed; replaced by the skip-and-report path. Easy to reintroduce if needed.
+- **Runtime fingerprinting fallback for hand-written entries.** Removed. Decision, not deferral. See the hand-written bullet above.
 - **Programmatic `Dial9StatsHandle`.** Not implemented. Diagnosis uses periodic `tracing::debug!` and rate-limited `tracing::warn!`. Follow-up once metrique exposes a richer reporting hook (see [metrique#205](https://github.com/awslabs/metrique/issues/205)).
 - **Schema-cache tunability.** The cache is keyed on `&'static` pointers, so its size is a compile-time property. No public tuning surface needed in v1.
 - **Sink-level compile-time diagnostics** (tagged-without-source, InternString-on-non-string, etc.). Metrique carries opaque tag identity; dial9-specific checks become runtime reports from the sink. A sink-driven derive helper could fold them into compile-time later.
@@ -159,6 +159,10 @@ Items consciously left out of this round. Each has a clear follow-up path; none 
 - Descriptor round-trip: a user-space struct with optionals, Flex, units, and tags; assert the sink registers exactly one schema with the expected annotations.
 - Context extraction: a caller-thread test that captures `Dial9Context`, passes through `BackgroundQueue`, and verifies the flush-thread snapshot matches.
 - Heterogeneous queue: a `BoxEntrySink<BoxEntry>` with multiple struct types, confirming each gets one schema and one source extraction.
+- Disabled-handle / no-source / no-`InTrace` paths: assert no-op behaviour and correct report rates.
+- Panic isolation: a `Value::write` that panics, asserting the offending event drops without poisoning the flush thread.
+- End-to-end: a representative example in `examples/` producing a trace file that the viewer can render, including both tokio runtime events and metrique-originated events.
+Heterogeneous queue: a `BoxEntrySink<BoxEntry>` with multiple struct types, confirming each gets one schema and one source extraction.
 - Disabled-handle / no-source / no-`InTrace` paths: assert no-op behaviour and correct report rates.
 - Panic isolation: a `Value::write` that panics, asserting the offending event drops without poisoning the flush thread.
 - End-to-end: a representative example in `examples/` producing a trace file that the viewer can render, including both tokio runtime events and metrique-originated events.

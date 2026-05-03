@@ -38,7 +38,15 @@ Strong preferences:
 - **`InTrace` default inheritance interacts with `flatten`.** The rule we landed on (child explicit decisions win; parent defaults fill only unspecified) is the rule that lets `Dial9Context` protect its own fields from accidental `InTrace` inheritance when flattened. It is a rule reviewers should exercise against their own use cases.
 - **Dial9 depends on a descriptor-system PR in metrique.** The dial9 implementation cannot land before the metrique PR does. The changelog doc tracks the specific dependency.
 - **Units on the wire are schema annotations, not field-name suffixes.** This is a one-time downstream-tooling change: consumers looking for `latency_Microseconds` need to look at schema metadata instead. It is the right long-term shape; field-name suffix is a hack we did not want to permanently bake in.
-- **Hand-written entries are skipped.** We accept losing them for this pass. The evolution path is a metrique-level "hand-written `DescribeEntry`" extension, not a dial9-level fallback. A fallback would duplicate most of the design's motivation.
+- **Hand-written `Entry` impls are skipped by default.** Users with a direct `impl Entry for MyType` (no `#[metrics]`, no derive) continue to work for EMF/JSON but are invisible to dial9 until they also implement `DescribeEntry` (see below). We chose skip-with-a-warn over a runtime fingerprinting fallback because the fallback would duplicate most of the design's motivation (fingerprint-per-optional-combination, fingerprint-per-Flex-key), and because the opt-in story is concrete enough that users who care can get back in.
+
+## Hand-written entries and manual dial9 opt-in
+
+Dial9 supports hand-written `Entry` impls via the same mechanism macro-derived entries use: `DescribeEntry`, defined in metrique (see `docs/entry-descriptors-review.md` in the metrique repo). A user with a hand-rolled `impl Entry` writes a `const EntryDescriptor` by hand and an `extract_source` implementation returning `Dial9ContextSnapshot` for the `Dial9` tag. No dial9-specific change is needed to support them; once metrique ships `DescribeEntry`, any hand-written user can participate in the dial9 trace.
+
+The initial dial9 release does not include examples for hand-written opt-in beyond a pointer at the metrique docs. If there is demand we can ship a narrow-scope dial9 helper (say, a `Dial9Context::snapshot_for_hand_written(&self)` that returns the right typed snapshot) so hand-written users do not have to reach into dial9 internals to construct it.
+
+We explicitly chose not to ship a runtime `Entry::write` fingerprinter as a hand-written fallback. The fingerprinter carries the optional-field and Flex explosion problem we designed this system to avoid; adding it as a second code path would keep the thrash problem alive inside dial9 even after the primary path stopped having it. If demand for hand-written support is real and `DescribeEntry` is not shipping soon enough, we can revisit.
 
 ## Key design choices
 
