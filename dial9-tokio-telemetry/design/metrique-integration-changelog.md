@@ -77,7 +77,7 @@ Round 1: no dial9-specific validation story. Misuse was caught if at all by the 
 Round 2: three-tier validation.
 
 - Compile-time, in the metrique macro: intrinsic structural checks (duplicate sources, conflicting tags). Independent of any sink.
-- Startup-time, at `Dial9Stream::new`: dial9 registers every descriptor declaring `source(Dial9)` via metrique's `SourceTag::register_descriptor` hook (backed by `linkme` internally). Empty registry (meaning NO structs have a dial9 context) when a dial9 sink is constructed produces a `debug_assert` failure (or `tracing::warn!` in prod). Users who hit legitimate false negatives disable per sink via `.startup_discovery(false)`; unsupported targets cfg out the hook entirely.
+- Startup-time, at `Dial9Stream::new`: dial9 registers every descriptor declaring `source(Dial9)` via metrique's `SourceTag::register_descriptor` hook (backed by `linkme` internally). Empty registry at sink construction is `debug_assert!` in debug, rate-limited `tracing::warn!` in release. Per-descriptor first-use checks for structural errors (`InTrace` without `Dial9` source, `InternString` on non-string, `Opaque` in `InTrace`) use `debug_assert!` in debug and rate-limited `tracing::error!` in release. Users who hit legitimate empty-registry false negatives disable per sink via `.startup_discovery(false)`; unsupported targets cfg out the hook entirely.
 - First-use, per descriptor: dial9-specific structural checks (InTrace without Dial9 source, InternString on non-string, Opaque in InTrace) run once per descriptor on the event path. `debug_assert!` in debug, rate-limited `tracing::error!` in release.
 
 ## Dependency on metrique

@@ -69,7 +69,7 @@ Tests are authored alongside the code in each track.
 ## Validation failure policy
 
 - First-use descriptor-local checks (InTrace-without-Dial9-source, InternString-on-non-string, Opaque-in-InTrace): `debug_assert!` panic in debug, rate-limited `tracing::error!` in release.
-- Empty-registry warn at sink construction: `tracing::warn!` in all builds. Disabled per-sink via `.startup_discovery(false)`; disabled at target level on unsupported platforms.
+- Empty-registry at sink construction: `debug_assert!` panic in debug, rate-limited `tracing::warn!` in release. Disabled per-sink via `.startup_discovery(false)`; disabled at target level on unsupported platforms.
 - Hand-written entries observed in the event path: rate-limited `tracing::warn!` once per distinct type id.
 - Panic inside `Value::write`: caught per entry, rate-limited `tracing::warn!`, flush-thread state preserved.
 

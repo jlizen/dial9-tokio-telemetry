@@ -274,7 +274,7 @@ The metrique macro catches structural mistakes that do not depend on dial9: dupl
 
 Dial9 implements `metrique::SourceTag` for its `Dial9` tag. Every macro-derived entry declaring `source(Dial9)` registers its `&'static EntryDescriptor` into a dial9-owned vec before `main`. At sink construction, dial9:
 
-1. If the registered vec is empty: emit one `tracing::warn!` pointing the user at "you attached a dial9 sink, but no struct in this binary declares `source(Dial9)`; the sink will not produce any events." Does not abort.
+1. If the registered vec is empty: `debug_assert!` panic in debug builds; rate-limited `tracing::warn!` in release. Release does not abort. The message points the user at "you attached a dial9 sink, but no struct in this binary declares `source(Dial9)`; the sink will not produce any events."
 2. If the registered vec is non-empty: run per-descriptor structural checks on every registered descriptor (same checks as first-use, described below). Any failures report via `debug_assert!` in debug builds and rate-limited `tracing::error!` in release.
 
 Known false-positive and false-negative scenarios:
