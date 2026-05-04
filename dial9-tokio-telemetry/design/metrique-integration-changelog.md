@@ -77,7 +77,7 @@ Round 1: no dial9-specific validation story. Misuse was caught if at all by the 
 Round 2: three-tier validation.
 
 - Compile-time, in the metrique macro: intrinsic structural checks (duplicate sources, conflicting tags). Independent of any sink.
-- Startup-time, at `Dial9Stream::new`: dial9 registers every descriptor declaring `source(Dial9)` via metrique's `SourceTag::register_descriptor` hook (backed by `linkme` internally). Empty registry when a dial9 sink is constructed produces a `tracing::warn!`. Users who hit legitimate false negatives disable per sink via `.startup_discovery(false)`; unsupported targets cfg out the hook entirely.
+- Startup-time, at `Dial9Stream::new`: dial9 registers every descriptor declaring `source(Dial9)` via metrique's `SourceTag::register_descriptor` hook (backed by `linkme` internally). Empty registry (meaning NO structs have a dial9 context) when a dial9 sink is constructed produces a `debug_assert` failure (or `tracing::warn!` in prod). Users who hit legitimate false negatives disable per sink via `.startup_discovery(false)`; unsupported targets cfg out the hook entirely.
 - First-use, per descriptor: dial9-specific structural checks (InTrace without Dial9 source, InternString on non-string, Opaque in InTrace) run once per descriptor on the event path. `debug_assert!` in debug, rate-limited `tracing::error!` in release.
 
 ## Dependency on metrique
@@ -101,24 +101,8 @@ Round 1 targeted requirements stayed. Round 2 adds explicit requirements that ro
 
 ## Alternatives that stayed rejected
 
-- Compile-time `#[derive(TraceEvent)]` on metrique structs: rejected for the same reasons (BoxEntry erasure + parallel TraceField maintenance).
+- Compile-time `#[derive(TraceEvent)]` on metrique structs: rejected for the same reasons (`BoxEntry` erasure, plus the blanket/no-blanket dilemma on `TraceField` where either outcome is worse than reading a descriptor).
 - Dial9 as a pure `Format`: rejected (capture timing).
 - Wrapping metrique composition primitives: rejected (fragments ecosystem).
 - Separate dial9-owned background thread: rejected (duplicates BackgroundQueue).
 - Programmatic stats handle in v1: still deferred.
-
-## Alternatives that became the new baseline
-
-- Static entry descriptor with explicit `FieldShape::Optional` / `Flex` entries (new in round 2).
-- Typed source extraction via `desc.source::<C>(..)` for caller-thread context (new in round 2).
-- `InTrace`/`InternString` field tags (new in round 2).
-
-## Open questions flagged in round-1 review, resolved
-
-- Russell: "does this handle optional fields?" → yes, structurally, via `FieldShape::Optional`.
-- Russell: "what we really want is 'tell me all the fields you can possibly produce'" → that is exactly what the descriptor does.
-- Russell: "we may want an opt-in flag to make fields part of the dial9 record" → `InTrace` field tag.
-- Russell: "we need to ensure there is a reasonable way to record context when the event starts" → `Dial9Context` source field.
-- Russell: "we need to consider units" → schema-level annotation, no per-event overhead.
-- Russell: "add a flag to flex so callers know it's flexing" → `FieldShape::Flex` in the descriptor; typed dynamic map on the wire.
-- Jess: "ok with runtime interpretation and heavier encoding on the runtime thread if we can meet the requirements?" → Round 2 moves the heavy lifting to metrique-compile-time descriptors; flush-thread work shrinks compared to round 1.

@@ -58,18 +58,16 @@ Explicitly out of scope for this dial9 release. Each has an evolution path; none
 
 ### Descriptor-aware sink, not runtime shape inference
 
-The original PR walked `Entry::write` and inferred schema from observed `(name, field_type)` sequences. That approach was rejected as the primary mechanism for two reasons:
+The sink consumes a static descriptor emitted by metrique's macro. The descriptor covers all possible fields up front, including optionality and `Flex`, so the sink never needs to infer shape from observed emissions. One registration per entry type. Runtime fingerprinting was rejected as the primary mechanism for two reasons:
 
-1. **Optional-field schema explosion.** A struct with K optional fields can produce up to 2^K distinct observed shapes. Every observed shape registers a separate schema and re-emits the schema frame. The cache either grows unboundedly or thrashes.
+1. **Optional-field schema explosion.** A struct with K optional fields can produce up to 2^K distinct observed shapes under fingerprinting. Every observed shape registers a separate schema and re-emits the schema frame. The cache either grows unboundedly or thrashes.
 2. **Unbounded Flex keys.** Each distinct `Flex::new(key)` value produces a distinct observed shape. For keys drawn from a high-cardinality source, the cache thrashes.
 
-The revised design consumes a static descriptor from metrique. Descriptor covers all possible fields up front. One registration per entry type. Optional fields and Flex lower to explicit descriptor entries, so the sink never needs to infer.
-
-Runtime discovery is still available as a fallback for hand-written entries; we chose to skip them in v1 instead of paying for two code paths.
+Fingerprinting is not on the roadmap as a fallback for hand-written entries. See "Hand-written entries" in the Non-goals list above.
 
 ### Context capture via a metrique source field, not a sink wrapper
 
-An earlier iteration captured caller-thread context through a `TokioContextSink` wrapper that injected an `EntryConfig`. The revised design puts capture in a real metrique field (`Dial9Context`) whose constructor reads the tokio thread-locals and whose closed form is the snapshot the sink extracts via `desc.source::<Dial9>(..)`.
+Caller-thread context lives in a real metrique field (`Dial9Context`) whose constructor reads the tokio thread-locals and whose closed form is the snapshot the sink extracts via `desc.source::<Dial9>(..)`. An alternative design, rejected, would capture context through a sink wrapper that injects an `EntryConfig`.
 
 Advantages:
 
@@ -78,7 +76,7 @@ Advantages:
 - The closed snapshot survives `BoxEntry` erasure in a typed way because it is reachable through `desc.source::<Dial9>(entry.inner_any())`.
 - Users who want context visible as normal payload can `flatten` instead of `no_write`; the source data remains structurally available.
 
-The sink wrapper is not removed outright: users who want runtime-wide defaults can still provide their own helper that constructs `Dial9Context` and merges it in. It stops being the primary path.
+The sink wrapper is not precluded: users who want runtime-wide defaults can provide their own helper that constructs `Dial9Context` and merges it in. It is not the primary path.
 
 ### Dial9-owned tags and provider, user-owned opt-in
 
@@ -158,7 +156,7 @@ Kept as a bounded fallback for hand-written entries, then cut to "skip hand-writ
 Rejected. Two independent blockers.
 
 1. **`BoxEntry` erasure.** `BoxEntrySink::append_any` takes `impl Entry + Send + 'static` and boxes internally. By the time `Dial9Stream` sees the entry, the concrete type (and any `TraceEvent` impl) has been erased. Preserving `TraceEvent`-ness requires either a parallel object-safe trait plus a dial9-owned box, or a metrique-side change so `ServiceMetrics` can attach a sink typed over `TraceEvent + Entry`. In Russell's review thread, he pointed out that `Encodeable` is `dyn`-safe; the blocker is not object safety but threading the type through `BoxEntrySink::append_any`, which does not carry that bound. The least-bad workaround is a TypeId-keyed vtable bridge on `BoxEntry`, which does not feel right.
-2. **Parallel `TraceField` maintenance.** Every `Value` impl (primitives, unit wrappers, aggregation types) plus every user custom type would need a parallel `TraceField` impl. Russell suggested a blanket `TraceField for impl Value`, which works for the primitives path, but it loses compile-time shape knowledge for user types (the whole reason one would use `TraceEvent` in the first place).
+2. **The `TraceField` blanket problem.** Every `Value` impl (primitives, unit wrappers, aggregation types) plus every user custom type would need a parallel `TraceField` impl unless a blanket `TraceField for impl Value` is provided. With the blanket, `TraceField` becomes runtime dispatch through `Value::write`, so the compile-time shape knowledge that motivated the path disappears. Without the blanket, each user type needs a hand-written `TraceField` impl forever. Either outcome is worse than reading a descriptor.
 
 The descriptor path sidesteps both. It reads metrique's stable abstraction and does not require any sink-specific trait on `Value` impls.
 
@@ -252,3 +250,4 @@ Rejected because cargo features are infectious: a workspace using dial9 via mult
 - `EntryConfig` is retained; it is the right primitive for per-emission, sink-provided data. Descriptors and sources cover per-type, entry-provided data. The two coexist.
 - `dial9_tokio_telemetry::telemetry::clock_monotonic_ns()` is `pub` and callable from any thread; `Dial9Context::capture()` uses it directly.
 - Schema annotations and typed dynamic maps are additive extensions of `dial9-trace-format`. We do not bump the format version. Old decoders hitting an unknown top-level frame tag or an unknown `FieldType` variant return `None` and halt; new traces silently truncate at the first extension when read with an older viewer. We accept that behaviour because the format is not widely distributed outside this repo, the viewer ships in-tree, and users producing new traces are in the same update cycle as the viewer. A version bump was considered and rejected as unnecessary cost; adding the behaviour here so reviewers can flag if they disagree.
+d as unnecessary cost; adding the behaviour here so reviewers can flag if they disagree.
