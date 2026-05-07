@@ -553,7 +553,7 @@ mod shuttle_tests {
         };
         let mut out = Vec::new();
         dec.for_each_event(|ev| {
-            if ev.name() == "ValidationEvent"
+            if ev.name == "ValidationEvent"
                 && let Some(decoded) =
                     ValidationEvent::decode(ev.timestamp_ns, ev.fields, &ev.schema.fields())
             {
