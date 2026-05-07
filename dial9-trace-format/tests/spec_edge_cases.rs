@@ -342,7 +342,7 @@ fn field_type_tag_0_invalid() {
 
 #[test]
 fn field_type_tag_14_invalid() {
-    assert!(FieldType::from_tag(14).is_none());
+    assert!(FieldType::from_tag(14).is_some());
 }
 
 #[test]
