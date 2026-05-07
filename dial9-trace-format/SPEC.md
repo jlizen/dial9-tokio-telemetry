@@ -38,8 +38,7 @@ Every frame begins with a 1-byte tag:
 | `0x03` | String Pool |
 | `0x04` | Stack Pool |
 | `0x05` | Timestamp Reset |
-| `0x06` | *(reserved)* |
-| `0x07` | Schema Annotations |
+| `0x06` | Schema Annotations |
 
 Unknown tags **must** cause the decoder to stop (the stream cannot be advanced without knowing the frame size).
 
@@ -151,14 +150,14 @@ Total: **9 bytes**.
 
 After decoding this frame, the decoder sets `timestamp_base_ns = timestamp_ns`. The next event's `timestamp_delta_ns` is relative to this new base.
 
-### Schema Annotations Frame (`0x07`)
+### Schema Annotations Frame (`0x06`)
 
 Carries per-field metadata for a previously-registered schema. Annotations are key-value string pairs attached to individual fields by index. A schema with no annotations produces no annotation frame.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| tag | u8 | `0x07` |
-| type_id | u16 | References a schema's `type_id` |
+| tag | u8 | `0x06` |
+| type_id | LEB128 u64 | References a schema's `type_id` (varint-encoded to allow future overflow beyond u16) |
 | count | u16 | Number of annotation entries |
 | entries | [FieldAnnotation; count] | Annotation entries (see below) |
 

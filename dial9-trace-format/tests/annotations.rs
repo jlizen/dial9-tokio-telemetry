@@ -59,15 +59,15 @@ fn annotations_round_trip() {
             } => {
                 assert_eq!(*type_id, WireTypeId(0));
                 assert_eq!(annotations.len(), 3);
-                assert_eq!(annotations[0].field_index, 0);
-                assert_eq!(annotations[0].key, "metrique.unit");
-                assert_eq!(annotations[0].value, "microseconds");
-                assert_eq!(annotations[1].field_index, 1);
-                assert_eq!(annotations[1].key, "dial9.display");
-                assert_eq!(annotations[1].value, "label");
-                assert_eq!(annotations[2].field_index, 0);
-                assert_eq!(annotations[2].key, "dial9.kpi");
-                assert_eq!(annotations[2].value, "true");
+                assert_eq!(annotations[0].field_index(), 0);
+                assert_eq!(annotations[0].key(), "metrique.unit");
+                assert_eq!(annotations[0].value(), "microseconds");
+                assert_eq!(annotations[1].field_index(), 1);
+                assert_eq!(annotations[1].key(), "dial9.display");
+                assert_eq!(annotations[1].value(), "label");
+                assert_eq!(annotations[2].field_index(), 0);
+                assert_eq!(annotations[2].key(), "dial9.kpi");
+                assert_eq!(annotations[2].value(), "true");
                 saw_annotations = true;
             }
             _ => {}
@@ -79,7 +79,7 @@ fn annotations_round_trip() {
     // Verify annotations are merged into the registry
     let registry_entry = dec.registry().get(WireTypeId(0)).unwrap();
     assert_eq!(registry_entry.annotations.len(), 3);
-    assert_eq!(registry_entry.annotations[0].key, "metrique.unit");
+    assert_eq!(registry_entry.annotations[0].key(), "metrique.unit");
 }
 
 #[test]
@@ -95,11 +95,15 @@ fn no_annotations_no_frame() {
     .unwrap();
 
     let data = enc.finish();
+    let mut dec = Decoder::new(&data).unwrap();
+    let frames = dec.decode_all();
 
-    // With no annotations, the byte stream should not contain tag 0x07
+    // With no annotations, no annotation frame should be emitted
     assert!(
-        !data.contains(&0x07),
-        "annotation frame tag should not appear when annotations are empty"
+        !frames
+            .iter()
+            .any(|f| matches!(f, DecodedFrame::SchemaAnnotations { .. })),
+        "annotation frame should not appear when annotations are empty"
     );
 }
 
@@ -172,7 +176,7 @@ fn annotations_silent_truncation() {
     // Find the annotation frame tag and truncate just before it
     let ann_pos = data
         .iter()
-        .position(|&b| b == 0x07)
+        .position(|&b| b == 0x06)
         .expect("annotation frame should exist");
     let truncated = &data[..ann_pos];
 
@@ -211,12 +215,12 @@ fn annotations_unknown_type_id_skipped() {
     let mut data = enc.finish();
 
     // Manually append an annotation frame for type_id 99 (never registered)
-    // Format: tag(1) | type_id(2 LE) | count(2 LE) | entries...
+    // Format: tag(1) | type_id(varint) | count(2 LE) | entries...
     // Entry: field_index(2 LE) | key_len(2 LE) | key | value_len(4 LE) | value
     let key = b"ghost";
     let value = b"annotation";
-    data.push(0x07); // TAG_SCHEMA_ANNOTATIONS
-    data.extend_from_slice(&99u16.to_le_bytes()); // type_id = 99
+    data.push(0x06); // TAG_SCHEMA_ANNOTATIONS
+    data.push(99); // type_id = 99 (varint, fits in 1 byte)
     data.extend_from_slice(&1u16.to_le_bytes()); // count = 1
     data.extend_from_slice(&0u16.to_le_bytes()); // field_index = 0
     data.extend_from_slice(&(key.len() as u16).to_le_bytes());
@@ -270,8 +274,8 @@ fn annotations_round_trip_ref() {
     assert!(ann_frame.is_some());
     if let Some(DecodedFrameRef::SchemaAnnotations { annotations, .. }) = ann_frame {
         assert_eq!(annotations.len(), 1);
-        assert_eq!(annotations[0].key, "key");
-        assert_eq!(annotations[0].value, "val");
+        assert_eq!(annotations[0].key(), "key");
+        assert_eq!(annotations[0].value(), "val");
     }
 }
 
@@ -303,7 +307,7 @@ fn annotations_for_each_event_works() {
         assert_eq!(ev.name, "Metric");
         // Annotations should be visible on the schema
         assert_eq!(ev.schema.annotations.len(), 1);
-        assert_eq!(ev.schema.annotations[0].key, "unit");
+        assert_eq!(ev.schema.annotations[0].key(), "unit");
         event_count += 1;
     })
     .unwrap();

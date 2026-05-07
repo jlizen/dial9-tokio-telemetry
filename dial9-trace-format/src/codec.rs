@@ -26,8 +26,7 @@ pub(crate) const TAG_EVENT: u8 = 0x02;
 pub(crate) const TAG_STRING_POOL: u8 = 0x03;
 pub(crate) const TAG_STACK_POOL: u8 = 0x04;
 pub(crate) const TAG_TIMESTAMP_RESET: u8 = 0x05;
-// Tag 0x06 is reserved (formerly ProcMaps, now schema-based events).
-pub(crate) const TAG_SCHEMA_ANNOTATIONS: u8 = 0x07;
+pub(crate) const TAG_SCHEMA_ANNOTATIONS: u8 = 0x06;
 
 /// Maximum nanosecond delta that fits in a u24 (3 bytes).
 pub(crate) const MAX_TIMESTAMP_DELTA_NS: u64 = 0xFF_FFFF; // 16,777,215
@@ -234,14 +233,14 @@ pub(crate) fn encode_schema_annotations(
         )
     })?;
     w.write_all(&[TAG_SCHEMA_ANNOTATIONS])?;
-    w.write_all(&type_id.0.to_le_bytes())?;
+    crate::leb128::encode_unsigned(type_id.0 as u64, w)?;
     w.write_all(&count.to_le_bytes())?;
     for a in annotations {
-        w.write_all(&a.field_index.to_le_bytes())?;
-        let key_bytes = a.key.as_bytes();
+        w.write_all(&a.field_index().to_le_bytes())?;
+        let key_bytes = a.key().as_bytes();
         w.write_all(&(key_bytes.len() as u16).to_le_bytes())?;
         w.write_all(key_bytes)?;
-        let value_bytes = a.value.as_bytes();
+        let value_bytes = a.value().as_bytes();
         w.write_all(&(value_bytes.len() as u32).to_le_bytes())?;
         w.write_all(value_bytes)?;
     }
@@ -410,8 +409,9 @@ fn decode_stack_pool_frame(data: &[u8]) -> Option<(Frame, usize)> {
 
 fn decode_schema_annotations_frame(data: &[u8]) -> Option<(Frame, usize)> {
     let mut pos = 1; // skip tag
-    let type_id = WireTypeId(u16::from_le_bytes(data.get(pos..pos + 2)?.try_into().ok()?));
-    pos += 2;
+    let (type_id_raw, consumed) = crate::leb128::decode_unsigned(&data[pos..])?;
+    let type_id = WireTypeId(type_id_raw as u16);
+    pos += consumed;
     let count = u16::from_le_bytes(data.get(pos..pos + 2)?.try_into().ok()?) as usize;
     pos += 2;
     let mut annotations = Vec::with_capacity(count);
@@ -426,11 +426,7 @@ fn decode_schema_annotations_frame(data: &[u8]) -> Option<(Frame, usize)> {
         pos += 4;
         let value = String::from_utf8(data.get(pos..pos + value_len)?.to_vec()).ok()?;
         pos += value_len;
-        annotations.push(FieldAnnotation {
-            field_index,
-            key,
-            value,
-        });
+        annotations.push(FieldAnnotation::new(field_index, key, value));
     }
     Some((
         Frame::SchemaAnnotations {

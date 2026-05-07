@@ -6,6 +6,7 @@
 use crate::codec::WireTypeId;
 use crate::encoder::FxHashMap;
 use crate::types::FieldType;
+use std::borrow::Cow;
 
 /// A per-field annotation carrying arbitrary key-value metadata.
 ///
@@ -15,23 +16,39 @@ use crate::types::FieldType;
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FieldAnnotation {
-    /// Index of the field this annotation applies to (0-based, matching the
-    /// field order in [`SchemaEntry::fields`]).
-    pub field_index: u16,
-    /// Annotation key (e.g. `"metrique.unit"`).
-    pub key: String,
-    /// Annotation value (e.g. `"microseconds"`).
-    pub value: String,
+    field_index: u16,
+    key: Cow<'static, str>,
+    value: Cow<'static, str>,
 }
 
 impl FieldAnnotation {
     /// Create a new field annotation.
-    pub fn new(field_index: u16, key: impl Into<String>, value: impl Into<String>) -> Self {
+    pub fn new(
+        field_index: u16,
+        key: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Self {
         Self {
             field_index,
-            key: key.into(),
-            value: value.into(),
+            key: Cow::Owned(key.into()),
+            value: Cow::Owned(value.into()),
         }
+    }
+
+    /// Index of the field this annotation applies to (0-based, matching the
+    /// field order in [`SchemaEntry::fields`]).
+    pub fn field_index(&self) -> u16 {
+        self.field_index
+    }
+
+    /// Annotation key (e.g. `"metrique.unit"`).
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    /// Annotation value (e.g. `"microseconds"`).
+    pub fn value(&self) -> &str {
+        &self.value
     }
 }
 
