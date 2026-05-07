@@ -7,6 +7,34 @@ use crate::codec::WireTypeId;
 use crate::encoder::FxHashMap;
 use crate::types::FieldType;
 
+/// A per-field annotation carrying arbitrary key-value metadata.
+///
+/// Annotations are emitted in a separate frame (`TAG_SCHEMA_ANNOTATIONS`)
+/// after the schema frame they belong to. They carry metadata such as units,
+/// display hints, or semantic-convention labels.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FieldAnnotation {
+    /// Index of the field this annotation applies to (0-based, matching the
+    /// field order in [`SchemaEntry::fields`]).
+    pub field_index: u16,
+    /// Annotation key (e.g. `"metrique.unit"`).
+    pub key: String,
+    /// Annotation value (e.g. `"microseconds"`).
+    pub value: String,
+}
+
+impl FieldAnnotation {
+    /// Create a new field annotation.
+    pub fn new(field_index: u16, key: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            field_index,
+            key: key.into(),
+            value: value.into(),
+        }
+    }
+}
+
 /// A single field within a schema: a name and a [`FieldType`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FieldDef {
@@ -28,6 +56,9 @@ pub struct SchemaEntry {
     pub has_timestamp: bool,
     /// Ordered list of fields (excluding the timestamp, which is in the header).
     pub fields: Vec<FieldDef>,
+    /// Per-field annotations (metadata such as units, display hints).
+    /// Empty by default; carried in a separate wire frame.
+    pub annotations: Vec<FieldAnnotation>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -111,6 +142,7 @@ mod tests {
                     field_type: FieldType::Varint,
                 },
             ],
+            annotations: Vec::new(),
         };
         reg.register(id, entry.clone()).unwrap();
         assert_eq!(reg.get(id), Some(&entry));
@@ -125,6 +157,7 @@ mod tests {
             name: "A".into(),
             has_timestamp: true,
             fields: vec![],
+            annotations: Vec::new(),
         };
         reg.register(id, entry.clone()).unwrap();
         reg.register(id, entry).unwrap();
@@ -140,6 +173,7 @@ mod tests {
                 name: "A".into(),
                 has_timestamp: true,
                 fields: vec![],
+                annotations: Vec::new(),
             },
         )
         .unwrap();
@@ -149,7 +183,8 @@ mod tests {
                 SchemaEntry {
                     name: "B".into(),
                     has_timestamp: true,
-                    fields: vec![]
+                    fields: vec![],
+                    annotations: Vec::new(),
                 }
             )
             .is_err()
@@ -166,6 +201,7 @@ mod tests {
                 name: "A".into(),
                 has_timestamp: true,
                 fields: vec![],
+                annotations: Vec::new(),
             },
         )
         .unwrap();
@@ -176,6 +212,7 @@ mod tests {
                 name: "B".into(),
                 has_timestamp: true,
                 fields: vec![],
+                annotations: Vec::new(),
             },
         )
         .unwrap();
