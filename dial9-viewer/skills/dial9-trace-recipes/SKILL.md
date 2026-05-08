@@ -232,7 +232,7 @@ for (const [name, h] of result.spanStats) {
 
 ```javascript
 const { buildSpanData } = require('./trace_analysis.js');
-const { spansByWorker } = buildSpanData(trace.customEvents);
+const { allSpans } = buildSpanData(trace.customEvents);
 
 // Find the longest poll
 let worst = null;
@@ -243,9 +243,10 @@ for (const w of workerIds) {
   }
 }
 
-// Find spans within that poll
-const wSpans = spansByWorker[worst.worker] || [];
-const inner = wSpans.filter(s => s.start >= worst.poll.start && s.end <= worst.poll.end);
+// Find spans that overlap with that poll (via segments on the same worker)
+const inner = allSpans.filter(s =>
+  s.segments.some(seg => seg.workerId === worst.worker && seg.start >= worst.poll.start && seg.end <= worst.poll.end)
+);
 console.log(`Longest poll: ${(worst.dur / 1e6).toFixed(2)}ms on worker ${worst.worker}`);
 console.log(`Contains ${inner.length} spans:`);
 const byName = {};
@@ -259,9 +260,8 @@ for (const [name, count] of Object.entries(byName)) {
 
 ```javascript
 const { buildSpanData } = require('./trace_analysis.js');
-const { spansByWorker } = buildSpanData(trace.customEvents);
+const { allSpans } = buildSpanData(trace.customEvents);
 
-const allSpans = Object.values(spansByWorker).flat();
 const matches = allSpans.filter(s => s.fields.request_id === 'abc-123');
 console.log(`${matches.length} spans for request abc-123:`);
 for (const s of matches) {
@@ -273,12 +273,13 @@ for (const s of matches) {
 
 ```javascript
 const { buildSpanData } = require('./trace_analysis.js');
-const { spansByWorker } = buildSpanData(trace.customEvents);
+const { allSpans } = buildSpanData(trace.customEvents);
 
 for (const w of workerIds) {
   for (const p of spans.workerSpans[w].polls) {
-    const wSpans = spansByWorker[w] || [];
-    const inner = wSpans.filter(s => s.start >= p.start && s.end <= p.end);
+    const inner = allSpans.filter(s =>
+      s.segments.some(seg => seg.workerId === w && seg.start >= p.start && seg.end <= p.end)
+    );
     if (inner.length > 10) {
       const byName = {};
       for (const s of inner) byName[s.spanName] = (byName[s.spanName] || 0) + 1;
@@ -295,10 +296,9 @@ Find a slow span and see what other spans and polls overlap on the same and othe
 
 ```javascript
 const { buildSpanData } = require('./trace_analysis.js');
-const { spansByWorker } = buildSpanData(trace.customEvents);
+const { allSpans } = buildSpanData(trace.customEvents);
 
 // Find the slowest query_metric span
-const allSpans = Object.values(spansByWorker).flat();
 const slowest = allSpans
   .filter(s => s.spanName === 'query_metric')
   .sort((a, b) => (b.end - b.start) - (a.end - a.start))[0];
@@ -307,14 +307,12 @@ if (slowest) {
   console.log(`Slowest query_metric: ${((slowest.end - slowest.start) / 1e6).toFixed(2)}ms`);
   console.log(`Fields: ${JSON.stringify(slowest.fields)}`);
 
-  // What other spans overlapped on all workers?
-  for (const [w, wSpans] of Object.entries(spansByWorker)) {
-    const overlapping = wSpans.filter(s => s.start < slowest.end && s.end > slowest.start && s !== slowest);
-    if (overlapping.length > 0) {
-      const byName = {};
-      for (const s of overlapping) byName[s.spanName] = (byName[s.spanName] || 0) + 1;
-      console.log(`  Worker ${w}: ${Object.entries(byName).map(([n, c]) => `${n}×${c}`).join(', ')}`);
-    }
+  // What other spans overlapped?
+  const overlapping = allSpans.filter(s => s.start < slowest.end && s.end > slowest.start && s !== slowest);
+  const byName = {};
+  for (const s of overlapping) byName[s.spanName] = (byName[s.spanName] || 0) + 1;
+  for (const [name, count] of Object.entries(byName)) {
+    console.log(`  ${name}: ${count}`);
   }
 }
 ```
@@ -325,10 +323,9 @@ Given a span, show its percentile rank compared to all spans of the same name.
 
 ```javascript
 const { buildSpanData } = require('./trace_analysis.js');
-const { spansByWorker } = buildSpanData(trace.customEvents);
+const { allSpans } = buildSpanData(trace.customEvents);
 
 function spanPercentile(span) {
-  const allSpans = Object.values(spansByWorker).flat();
   const peers = allSpans.filter(s => s.spanName === span.spanName).map(s => s.end - s.start);
   peers.sort((a, b) => a - b);
   const dur = span.end - span.start;
@@ -342,7 +339,6 @@ function spanPercentile(span) {
 }
 
 // Example: rank the slowest query_metric
-const allSpans = Object.values(spansByWorker).flat();
 const slowest = allSpans
   .filter(s => s.spanName === 'query_metric')
   .sort((a, b) => (b.end - b.start) - (a.end - a.start))[0];
@@ -353,20 +349,14 @@ if (slowest) spanPercentile(slowest);
 
 ```javascript
 const { buildSpanData } = require('./trace_analysis.js');
-const { spansByWorker } = buildSpanData(trace.customEvents);
+const { allSpans } = buildSpanData(trace.customEvents);
 
 const requestId = 'abc-123'; // replace with your request ID
-const timeline = [];
-for (const [w, wSpans] of Object.entries(spansByWorker)) {
-  for (const s of wSpans) {
-    if (s.fields.request_id === requestId) {
-      timeline.push({ ...s, worker: Number(w) });
-    }
-  }
-}
-timeline.sort((a, b) => a.start - b.start);
-for (const s of timeline) {
-  console.log(`  +${((s.start - minTs) / 1e6).toFixed(3)}ms worker=${s.worker} ${s.spanName} ${((s.end - s.start) / 1e3).toFixed(1)}µs`);
+const matches = allSpans.filter(s => s.fields.request_id === requestId);
+matches.sort((a, b) => a.start - b.start);
+for (const s of matches) {
+  const workers = [...new Set(s.segments.map(seg => seg.workerId))].join(',');
+  console.log(`  +${((s.start - minTs) / 1e6).toFixed(3)}ms worker=${workers} ${s.spanName} ${((s.end - s.start) / 1e3).toFixed(1)}µs`);
 }
 ```
 
