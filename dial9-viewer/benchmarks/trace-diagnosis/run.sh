@@ -39,6 +39,10 @@ if [[ -n "$HARNESS" && "$AGENT_NAME" != "codex" ]]; then
     echo "--harness is only supported with --agent codex" >&2
     exit 1
 fi
+if [[ -n "$HARNESS" ]] && ! codex exec --help 2>&1 | grep -q -- "--harness"; then
+    echo "--harness requested, but this Codex CLI does not support 'codex exec --harness'" >&2
+    exit 1
+fi
 
 # Setup if target doesn't exist or --clean
 if [[ ! -d "$TARGET/${SKILLS_DIR:-.claude/skills}" ]] || [[ -n "$CLEAN" ]]; then
@@ -98,7 +102,17 @@ case "$AGENT_NAME" in
         echo "$PROMPT" | kiro chat --no-interactive $MODEL_FLAG 2>&1 | tee "$LOG.md"
         ;;
     codex)
-        echo "$PROMPT" | codex --quiet $MODEL_FLAG $HARNESS_FLAG 2>&1 | tee "$LOG.md"
+        echo "$PROMPT" | codex exec --json $MODEL_FLAG $HARNESS_FLAG - \
+            | tee "$LOG.raw" \
+            | jq -r --unbuffered '
+                if .type == "item.completed" and .item.type == "agent_message" then
+                    .item.text // empty
+                elif .type == "item.started" and .item.type == "command_execution" then
+                    "→ Bash \(.item.command)"
+                elif .type == "item.completed" and .item.type == "command_execution" then
+                    "← Bash exit \(.item.exit_code)"
+                else empty end' \
+            | tee "$LOG.md"
         ;;
     *)
         echo "Unknown agent: $AGENT (supported: claude, kiro, codex)"
@@ -128,12 +142,23 @@ echo "Output: $LOG.md"
 echo "Raw JSON: $LOG.raw"
 echo "Summary: $LOG.summary"
 
-# Extract agent tool usage log (claude only, requires raw JSON)
+# Extract agent tool usage log from raw JSON when available.
 if [[ -f "$LOG.raw" ]]; then
-    jq -r 'select(.type == "assistant") | .message.content[]? | select(.type == "tool_use") | "\(.name): \(.input | tostring | .[0:200])"' "$LOG.raw" > "$LOG.commands"
-    jq -r 'select(.type == "assistant") | .message.content[]? | select(.type == "thinking") | .thinking' "$LOG.raw" > "$LOG.thinking"
-    echo "Commands: $LOG.commands"
-    echo "Thinking: $LOG.thinking"
+    case "$AGENT_NAME" in
+        claude)
+            jq -r 'select(.type == "assistant") | .message.content[]? | select(.type == "tool_use") | "\(.name): \(.input | tostring | .[0:200])"' "$LOG.raw" > "$LOG.commands"
+            jq -r 'select(.type == "assistant") | .message.content[]? | select(.type == "thinking") | .thinking' "$LOG.raw" > "$LOG.thinking"
+            echo "Commands: $LOG.commands"
+            echo "Thinking: $LOG.thinking"
+            ;;
+        codex)
+            jq -r '
+                select(.type == "item.completed" and .item.type == "command_execution")
+                | "Bash: \(.item.command)\nexit: \(.item.exit_code)\n\(.item.aggregated_output // "")"
+            ' "$LOG.raw" > "$LOG.commands"
+            echo "Commands: $LOG.commands"
+            ;;
+    esac
 fi
 echo ""
 echo "Evaluate with:"
