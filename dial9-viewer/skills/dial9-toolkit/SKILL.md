@@ -1,6 +1,6 @@
 ---
 name: dial9-toolkit
-description: JavaScript analysis toolkit for parsing and analyzing dial9 Tokio runtime traces. Provides trace_parser.js, trace_analysis.js, and analyze.js. Use when you need to load, parse, or programmatically analyze dial9 trace files.
+description: JavaScript analysis toolkit for parsing and analyzing dial9 Tokio runtime traces. Always start trace diagnosis with analyzeTraces() from analyze.js, then use parseTrace() and lower-level helpers only to confirm assumptions or drill into raw events.
 ---
 
 # dial9 Analysis Toolkit
@@ -38,7 +38,11 @@ node scripts/analyze.js trace.bin --force          # ignore cached results
 | `scripts/trace_analysis.js` | Analysis functions: `buildWorkerSpans`, `attachCpuSamples`, etc. |
 | `scripts/decode.js` | Low-level binary format decoder |
 
-## Usage from other skills
+## Default workflow
+
+1. Always run `analyzeTraces(path)` first for trace diagnosis.
+2. Base initial findings on the aggregate result: long polls, worker spans, scheduling delays, CPU/off-CPU groups, queue depth, task lifecycle counts, and span summaries.
+3. Then use `parseTrace()` or lower-level helpers only to confirm assumptions, inspect raw events, or follow a specific task/wake/span chronology.
 
 ```javascript
 const { analyzeTraces } = require('./scripts/analyze.js');
@@ -48,7 +52,7 @@ const result = await analyzeTraces('/path/to/traces/');
 
 `analyzeTraces` works on a single file or a directory. It returns a single aggregated result object with everything you need for diagnosis. See the `dial9-trace-analysis` skill for the full return schema.
 
-For drill-down into raw events (specific tasks, custom filtering, wake chains):
+After the aggregate pass, use the low-level parser to confirm assumptions or inspect raw details that the aggregate result points at, such as specific tasks, custom filters, wake chains, or per-file chronology:
 
 ```javascript
 const { parseTrace } = require('./scripts/trace_parser.js');

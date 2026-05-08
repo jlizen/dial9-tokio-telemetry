@@ -7,15 +7,17 @@ CLEAN=""
 MODEL=""
 AGENT=""
 EFFORT=""
+HARNESS=""
 
 usage() {
-    echo "Usage: ./run.sh [target-dir] [--clean] [--model <model>] [--agent <agent>] [--effort <level>]"
+    echo "Usage: ./run.sh [target-dir] [--clean] [--model <model>] [--agent <agent>] [--effort <level>] [--harness]"
     echo ""
     echo "  target-dir    Path to the test project (default: /tmp/dial9-bench-target)"
     echo "  --clean       Regenerate the target project from scratch"
     echo "  --model       Model to use (e.g. claude-sonnet-4-20250514)"
     echo "  --agent       Agent to use (e.g. kiro, claude, codex)"
     echo "  --effort      Effort level (low, medium, high, xhigh, max). Claude only."
+    echo "  --harness     Run Codex with its harness flag. Codex only."
     exit 1
 }
 
@@ -25,11 +27,18 @@ while [[ $# -gt 0 ]]; do
         --model) MODEL="$2"; shift 2 ;;
         --agent) AGENT="$2"; shift 2 ;;
         --effort) EFFORT="$2"; shift 2 ;;
+        --harness) HARNESS="yes"; shift ;;
         --help|-h) usage ;;
         -*) usage ;;
         *) TARGET="$1"; shift ;;
     esac
 done
+
+AGENT_NAME="${AGENT:-claude}"
+if [[ -n "$HARNESS" && "$AGENT_NAME" != "codex" ]]; then
+    echo "--harness is only supported with --agent codex" >&2
+    exit 1
+fi
 
 # Setup if target doesn't exist or --clean
 if [[ ! -d "$TARGET/${SKILLS_DIR:-.claude/skills}" ]] || [[ -n "$CLEAN" ]]; then
@@ -60,8 +69,13 @@ if [[ -n "$EFFORT" ]]; then
     EFFORT_FLAG="--effort $EFFORT"
 fi
 
+HARNESS_FLAG=""
+if [[ -n "$HARNESS" ]]; then
+    HARNESS_FLAG="--harness"
+fi
+
 cd "$TARGET"
-case "${AGENT:-claude}" in
+case "$AGENT_NAME" in
     claude)
         echo "$PROMPT" | claude -p --verbose --output-format stream-json \
             $MODEL_FLAG \
@@ -84,7 +98,7 @@ case "${AGENT:-claude}" in
         echo "$PROMPT" | kiro chat --no-interactive $MODEL_FLAG 2>&1 | tee "$LOG.md"
         ;;
     codex)
-        echo "$PROMPT" | codex --quiet $MODEL_FLAG 2>&1 | tee "$LOG.md"
+        echo "$PROMPT" | codex --quiet $MODEL_FLAG $HARNESS_FLAG 2>&1 | tee "$LOG.md"
         ;;
     *)
         echo "Unknown agent: $AGENT (supported: claude, kiro, codex)"
@@ -101,7 +115,8 @@ start: $(date -Iseconds -d @$START_TIME 2>/dev/null || date -r $START_TIME +%Y-%
 end: $(date -Iseconds -d @$END_TIME 2>/dev/null || date -r $END_TIME +%Y-%m-%dT%H:%M:%S%z)
 duration: ${ELAPSED}s
 model: ${MODEL:-default}
-agent: ${AGENT:-claude}
+agent: $AGENT_NAME
+harness: ${HARNESS:-no}
 target: $TARGET
 EOF
 

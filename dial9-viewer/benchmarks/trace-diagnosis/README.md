@@ -13,12 +13,18 @@ Manual testing harness for verifying dial9 skills work correctly with AI agents.
 
 # Regenerate from scratch
 ./run.sh --clean
+
+# Run with Codex instead of Claude
+./run.sh --agent codex
+
+# Run Codex through its harness mode
+./run.sh --agent codex --harness
 ```
 
 ## What it does
 
 1. `setup.sh`: generates a minimal Rust project with `dial9-tokio-telemetry` as a dep, copies the demo trace, installs skills via Symposium (falls back to `dial9-viewer agents skills` if symposium isn't available)
-2. `run.sh`: calls setup if needed, then runs `claude -p` with a diagnosis prompt and captures output
+2. `run.sh`: calls setup if needed, then runs the selected agent with a diagnosis prompt and captures output. Claude is the default; Codex is also supported with `--agent codex`, and Codex harness mode is available with `--agent codex --harness`.
 
 ## Evaluating results
 
@@ -31,7 +37,7 @@ Evaluate /tmp/dial9-skill-benchmark-*.md against benchmarks/trace-diagnosis/EXPE
 ## Prerequisites
 
 - `dial9-viewer` built from this repo (or installed)
-- `claude` CLI authenticated
+- `claude` CLI authenticated for Claude runs, or `codex` CLI authenticated for Codex runs
 - Optionally: `symposium` installed for skill sync (otherwise falls back to direct unpack)
 
 ## What it tests

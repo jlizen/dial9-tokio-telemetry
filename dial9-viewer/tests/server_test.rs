@@ -711,7 +711,97 @@ async fn local_path_traversal_rejected() {
 
 #[cfg(test)]
 mod skills_unpack_tests {
+    use std::path::Path;
     use std::process::Command;
+
+    fn validate_skill_frontmatter(skill_dir: &Path, content: &str) {
+        assert!(
+            content.starts_with("---\n"),
+            "SKILL.md in {skill_dir:?} missing frontmatter delimiter"
+        );
+
+        // Validate name field matches directory name
+        let dir_name = skill_dir.file_name().unwrap().to_string_lossy().to_string();
+        let name_line = content
+            .lines()
+            .find(|l| l.starts_with("name:"))
+            .unwrap_or_else(|| panic!("SKILL.md in {skill_dir:?} missing name field"));
+        let name = name_line.strip_prefix("name:").unwrap().trim();
+        assert_eq!(
+            name, dir_name,
+            "name field {:?} doesn't match directory {:?}",
+            name, dir_name
+        );
+
+        // Validate name format: lowercase + hyphens, no leading/trailing/consecutive hyphens
+        assert!(
+            !name.is_empty() && name.len() <= 64,
+            "name {:?} invalid length",
+            name
+        );
+        assert!(
+            name.chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'),
+            "name {:?} contains invalid characters",
+            name
+        );
+        assert!(
+            !name.starts_with('-') && !name.ends_with('-'),
+            "name {:?} has leading/trailing hyphen",
+            name
+        );
+        assert!(
+            !name.contains("--"),
+            "name {:?} has consecutive hyphens",
+            name
+        );
+
+        // Validate description field exists and is a non-empty scalar string.
+        let desc_line = content
+            .lines()
+            .find(|l| l.starts_with("description:"))
+            .unwrap_or_else(|| panic!("SKILL.md in {skill_dir:?} missing description field"));
+        let desc = desc_line.strip_prefix("description:").unwrap().trim();
+        assert!(!desc.is_empty(), "empty description in {skill_dir:?}");
+        assert!(
+            !(desc.starts_with('[') || desc.starts_with('{')),
+            "description must be a scalar string in {skill_dir:?}: {desc:?}"
+        );
+        assert!(
+            desc.len() <= 1024,
+            "description too long ({}) in {:?}",
+            desc.len(),
+            skill_dir
+        );
+    }
+
+    /// Validates repo-local `.agents/skills` definitions that are loaded directly by agents.
+    #[test]
+    fn local_agent_skills_have_valid_frontmatter() {
+        let skills_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join(".agents/skills");
+        let mut skill_count = 0;
+
+        for entry in std::fs::read_dir(&skills_dir).unwrap() {
+            let entry = entry.unwrap();
+            if !entry.path().is_dir() {
+                continue;
+            }
+            skill_count += 1;
+            let skill_md = entry.path().join("SKILL.md");
+            assert!(skill_md.exists(), "Missing SKILL.md in {:?}", entry.path());
+
+            let content = std::fs::read_to_string(&skill_md).unwrap();
+            validate_skill_frontmatter(&entry.path(), &content);
+        }
+
+        assert!(
+            skill_count >= 2,
+            "expected at least 2 local agent skills, got {skill_count}"
+        );
+    }
 
     /// Validates that `agents skills <dir>` produces a valid Agent Skills directory.
     /// Each skill must have a SKILL.md with valid frontmatter (name + description).
@@ -741,63 +831,7 @@ mod skills_unpack_tests {
             assert!(skill_md.exists(), "Missing SKILL.md in {:?}", entry.path());
 
             let content = std::fs::read_to_string(&skill_md).unwrap();
-            assert!(
-                content.starts_with("---\n"),
-                "SKILL.md in {:?} missing frontmatter delimiter",
-                entry.path()
-            );
-
-            // Validate name field matches directory name
-            let dir_name = entry.file_name().to_string_lossy().to_string();
-            let name_line = content
-                .lines()
-                .find(|l| l.starts_with("name:"))
-                .unwrap_or_else(|| panic!("SKILL.md in {:?} missing name field", entry.path()));
-            let name = name_line.strip_prefix("name:").unwrap().trim();
-            assert_eq!(
-                name, dir_name,
-                "name field {:?} doesn't match directory {:?}",
-                name, dir_name
-            );
-
-            // Validate name format: lowercase + hyphens, no leading/trailing/consecutive hyphens
-            assert!(
-                !name.is_empty() && name.len() <= 64,
-                "name {:?} invalid length",
-                name
-            );
-            assert!(
-                name.chars()
-                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'),
-                "name {:?} contains invalid characters",
-                name
-            );
-            assert!(
-                !name.starts_with('-') && !name.ends_with('-'),
-                "name {:?} has leading/trailing hyphen",
-                name
-            );
-            assert!(
-                !name.contains("--"),
-                "name {:?} has consecutive hyphens",
-                name
-            );
-
-            // Validate description field exists and is non-empty
-            let desc_line = content
-                .lines()
-                .find(|l| l.starts_with("description:"))
-                .unwrap_or_else(|| {
-                    panic!("SKILL.md in {:?} missing description field", entry.path())
-                });
-            let desc = desc_line.strip_prefix("description:").unwrap().trim();
-            assert!(!desc.is_empty(), "empty description in {:?}", entry.path());
-            assert!(
-                desc.len() <= 1024,
-                "description too long ({}) in {:?}",
-                desc.len(),
-                entry.path()
-            );
+            validate_skill_frontmatter(&entry.path(), &content);
         }
         assert!(
             skill_count >= 6,
