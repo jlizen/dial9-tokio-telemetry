@@ -366,15 +366,32 @@ Task dumps capture async backtraces at yield points. Use them to see what future
 
 ```javascript
 const { parseTrace, symbolizeChain, formatFrame } = require('./trace_parser.js');
+const { buildWorkerSpans } = require('./trace_analysis.js');
 
 for await (const trace of parseTrace('/path/to/traces/')) {
+  const workerIds = [...new Set(trace.events.filter(e => e.workerId !== undefined).map(e => e.workerId))].sort((a,b)=>a-b);
+  const spans = buildWorkerSpans(trace.events, workerIds, trace.maxTs);
+
   for (const [taskId, dumps] of trace.taskDumps) {
+    const taskPolls = [];
+    for (const w of workerIds) {
+      for (const p of spans.workerSpans[w].polls) {
+        if (p.taskId === taskId) taskPolls.push(p);
+      }
+    }
+    taskPolls.sort((a, b) => a.start - b.start);
+
     const loc = trace.taskSpawnLocs?.get(taskId) || '(unknown)';
-    console.log(`Task ${taskId} (${loc}): ${dumps.length} task dumps`);
     for (const dump of dumps) {
+      // dump.timestamp matches the pollStart of the following poll;
+      // the idle period is the gap between the preceding poll's end and this timestamp
+      const pollIdx = taskPolls.findIndex(p => p.start === dump.timestamp);
+      const idleStart = pollIdx > 0 ? taskPolls[pollIdx - 1].end : trace.minTs;
+      const idleDur = (dump.timestamp - idleStart) / 1e6;
+
       const frames = symbolizeChain(dump.callchain, trace.callframeSymbols);
-      const readable = frames.map(f => formatFrame(f).text).join('\n    ');
-      console.log(`  at +${((dump.timestamp - trace.minTs) / 1e6).toFixed(1)}ms:\n    ${readable}`);
+      const leaf = frames[0] ? formatFrame(frames[0]).text : '(unknown)';
+      console.log(`Task ${taskId} (${loc}) idle ${idleDur.toFixed(1)}ms awaiting: ${leaf}`);
     }
   }
 }
