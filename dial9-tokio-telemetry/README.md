@@ -12,6 +12,8 @@ It can be hard to understand application performance and behavior in async code.
 
 Compared to [tokio-console](https://github.com/tokio-rs/console), which is designed for live debugging, dial9-tokio-telemetry is designed for post-hoc analysis. Because traces are written to files with bounded disk usage, you can leave it running in production and come back later to deeply analyze what went wrong or why a specific request was slow. On Linux, traces include CPU profile samples and kernel scheduling events, so you can see not just _that_ a task was delayed but _what code_ was running on the worker instead.
 
+Compared to [tokio-metrics](https://github.com/tokio-rs/tokio-metrics), which exports aggregate counters (mean poll time, queue depth, etc.) for dashboarding and alerting, dial9 records every individual event. tokio-metrics is great for "something is wrong" alarms; dial9 is for "here's exactly what happened and why." They're complementary: use tokio-metrics for operational dashboards, dial9 for deep dives when those dashboards fire.
+
 ## Is there a demo?
 
 Yes, check out this [quick walkthrough (YouTube)](https://www.youtube.com/watch?v=kr0RYMu57kU)!

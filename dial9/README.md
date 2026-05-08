@@ -48,7 +48,7 @@ Open `http://localhost:3000` to browse traces. Enter a search prefix (e.g. `2026
 
 ### `agents`
 
-Prints skill documentation and extracts the JS analysis toolkit for AI agents.
+Manages skill documentation and the JS analysis toolkit for AI agents.
 
 ```bash
 # Print the agent skill header
