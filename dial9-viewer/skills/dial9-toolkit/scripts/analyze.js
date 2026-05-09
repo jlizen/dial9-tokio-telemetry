@@ -485,7 +485,8 @@ async function analyzeTraces(tracePath, opts) {
   const acc = createAccumulator();
 
   if (!isDir) {
-    for await (const trace of parseTrace(tracePath, opts)) {
+    const { onParseProgress, onParseComplete, onAnalysisProgress, ...parseOpts } = opts;
+    for await (const trace of parseTrace(tracePath, parseOpts)) {
       accumulateTrace(acc, trace);
     }
     return finalizeAccumulator(acc);
