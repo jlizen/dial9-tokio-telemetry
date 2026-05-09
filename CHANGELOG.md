@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.9](https://github.com/dial9-rs/dial9-tokio-telemetry/compare/dial9-tokio-telemetry-v0.3.8...dial9-tokio-telemetry-v0.3.9) - 2026-05-08
+
+### Fixed
+
+- fix(toolkit): don't pass directory progress callbacks for single-file analyzeTraces ([#384](https://github.com/dial9-rs/dial9-tokio-telemetry/pull/384))
+
+
 ## [0.3.8](https://github.com/dial9-rs/dial9-tokio-telemetry/compare/dial9-tokio-telemetry-v0.3.7...dial9-tokio-telemetry-v0.3.8) - 2026-05-08
 
 ### Added
