@@ -1488,7 +1488,7 @@ dependencies = [
 
 [[package]]
 name = "dial9"
-version = "0.3.7"
+version = "0.3.8"
 dependencies = [
  "anyhow",
  "dial9-viewer",
