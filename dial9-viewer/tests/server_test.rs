@@ -775,10 +775,10 @@ mod skills_unpack_tests {
         );
     }
 
-    /// Validates source skill definitions in `dial9-viewer/skills/` have valid frontmatter.
+    /// Validates source skill definitions in `dial9-viewer/.symposium/skills/` have valid frontmatter.
     #[test]
     fn source_skills_have_valid_frontmatter() {
-        let skills_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("skills");
+        let skills_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join(".symposium/skills");
         let mut skill_count = 0;
 
         for entry in std::fs::read_dir(&skills_dir).unwrap() {

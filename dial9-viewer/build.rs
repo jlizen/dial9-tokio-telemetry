@@ -12,11 +12,11 @@ fn main() {
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
     let out_dir = env::var("OUT_DIR").unwrap();
 
-    println!("cargo::rerun-if-changed=skills");
+    println!("cargo::rerun-if-changed=.symposium/skills");
     println!("cargo::rerun-if-changed=ui");
     println!("cargo::rerun-if-changed=README_TELEMETRY.md");
 
-    let skills_dir = Path::new(&manifest_dir).join("skills");
+    let skills_dir = Path::new(&manifest_dir).join(".symposium/skills");
     let mut skills: Vec<SkillInfo> = Vec::new();
 
     // Walk each subdirectory in skills/
